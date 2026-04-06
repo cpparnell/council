@@ -3,10 +3,11 @@ SQLAlchemy table definitions for the Council trading bot.
 
 Tables
 ------
-cycles          One row per council run (context snapshot + agent outputs + signal).
-trades          One row per order placed (entry → exit lifecycle).
-portfolio_state Singleton row tracking cash and peak portfolio value.
-reflections     One row per post-trade reflection summary.
+cycles           One row per council run (context snapshot + agent outputs + signal).
+trades           One row per order placed (entry → exit lifecycle).
+portfolio_state  Singleton row tracking cash and peak portfolio value.
+reflections      One row per post-trade reflection summary.
+weekly_summaries One row per weekly performance review.
 
 Usage
 -----
@@ -87,6 +88,17 @@ reflections = Table(
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("trade_id", Integer, nullable=False),       # FK → trades.id
     Column("summary", Text, nullable=False),
+    Column("created_at", DateTime, nullable=False),
+)
+
+weekly_summaries = Table(
+    "weekly_summaries",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("window_start", DateTime, nullable=False),
+    Column("window_end", DateTime, nullable=False),
+    Column("summary", Text, nullable=False),
+    Column("metrics_json", Text, nullable=False),  # serialised compute_all_metrics() output
     Column("created_at", DateTime, nullable=False),
 )
 

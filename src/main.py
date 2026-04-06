@@ -4,25 +4,28 @@ Council — main cycle entry point.
 One-shot usage (run once, then exit):
     python -m src.main
 
-Scheduled usage (daily at 00:05 UTC):
+Scheduled usage (daily at 00:05 UTC + weekly summary Sundays 08:00 UTC):
     python -m src.main --schedule
 
-The --schedule flag starts an APScheduler blocking loop.  The job fires
-at 00:05 UTC each day (5 minutes after the daily close) to ensure the
-final candle is available.
+Weekly summary only:
+    python -m src.main --weekly
 
 Environment variables
 ---------------------
-ANTHROPIC_API_KEY     Required — used by all LLM agents.
-BINANCE_TESTNET_API_KEY / BINANCE_TESTNET_SECRET  Required for order execution.
-COUNCIL_DB_PATH       Path to SQLite file (default: ./council.db).
-INITIAL_CAPITAL       Starting paper capital in USD (default: 10000).
-DRY_RUN               If set to "1", skips order execution (logs only).
+ANTHROPIC_API_KEY         Required — used by all LLM agents.
+BINANCE_TESTNET_API_KEY   Required for order execution in paper mode.
+BINANCE_TESTNET_SECRET    Required for order execution in paper mode.
+BINANCE_API_KEY           Required for live trading (TRADING_MODE=live).
+BINANCE_SECRET            Required for live trading (TRADING_MODE=live).
+COUNCIL_DB_PATH           Path to SQLite file (default: ./council.db).
+INITIAL_CAPITAL           Starting paper capital in USD (default: 10000).
+TRADING_MODE              "paper" (default, Binance testnet) or "live" (mainnet).
+COUNCIL_LIVE_CONFIRMED    Must be "1" when TRADING_MODE=live — safety gate.
+DRY_RUN                   If "1", skips order execution entirely (logs only).
 """
 
 import argparse
 import asyncio
-import json
 import logging
 import os
 import sys
@@ -34,7 +37,7 @@ from src.agents.runner import run_council
 from src.data.assembler import assemble_context
 from src.data.price import get_exchange
 from src.db.schema import create_all, get_engine
-from src.db.store import get_open_trade, get_trade, save_reflection
+from src.db.store import save_reflection
 from src.execution.router import reconcile_open_position, route_signal
 from src.execution.state import build_portfolio_dict
 from src.models import CouncilOutputs, DeliberationOutput
@@ -47,7 +50,35 @@ logging.basicConfig(
 logger = logging.getLogger("council.main")
 
 DRY_RUN = os.getenv("DRY_RUN", "0") == "1"
+TRADING_MODE = os.getenv("TRADING_MODE", "paper").lower()
 SYMBOL = "BTC/USDT"
+
+# ── Live trading safety gate ───────────────────────────────────────────────
+if TRADING_MODE == "live":
+    if os.getenv("COUNCIL_LIVE_CONFIRMED") != "1":
+        logging.getLogger("council.main").error(
+            "TRADING_MODE=live requires COUNCIL_LIVE_CONFIRMED=1. "
+            "Set this env var only when you intend to trade real funds."
+        )
+        sys.exit(1)
+    logging.getLogger("council.main").warning(
+        "⚠️  LIVE TRADING MODE ACTIVE — real funds at risk"
+    )
+
+
+def _get_exchange():
+    """Return a ccxt exchange configured for the current TRADING_MODE."""
+    use_sandbox = TRADING_MODE != "live"
+    return get_exchange(sandbox=use_sandbox)
+
+
+async def _do_weekly() -> None:
+    from src.reporting.weekly import run_weekly_summary
+    engine = get_engine()
+    create_all(engine)
+    client = anthropic.AsyncAnthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    summary = await run_weekly_summary(engine, client)
+    print(summary)
 
 
 async def run_cycle() -> None:
@@ -55,7 +86,7 @@ async def run_cycle() -> None:
     engine = get_engine()
     create_all(engine)
 
-    exchange = get_exchange(sandbox=True)
+    exchange = _get_exchange()
     anthropic_client = anthropic.AsyncAnthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
     # ── Reconcile: check if an open position has been stopped out ──────────
@@ -153,9 +184,18 @@ def main() -> None:
     parser.add_argument(
         "--schedule",
         action="store_true",
-        help="Run on a daily schedule (00:05 UTC) instead of once and exit",
+        help="Run on a daily schedule (00:05 UTC) + weekly summary (Sunday 08:00 UTC)",
+    )
+    parser.add_argument(
+        "--weekly",
+        action="store_true",
+        help="Run the weekly summary report and exit",
     )
     args = parser.parse_args()
+
+    if args.weekly:
+        asyncio.run(_do_weekly())
+        return
 
     if args.schedule:
         try:
@@ -173,7 +213,17 @@ def main() -> None:
             name="Council daily cycle",
             misfire_grace_time=300,
         )
-        logger.info("Scheduler started — next run at 00:05 UTC daily. Ctrl+C to stop.")
+        scheduler.add_job(
+            lambda: asyncio.run(_do_weekly()),
+            CronTrigger(day_of_week="sun", hour=8, minute=0),
+            id="council_weekly",
+            name="Council weekly summary",
+            misfire_grace_time=3600,
+        )
+        logger.info(
+            "Scheduler started — daily cycle 00:05 UTC, weekly summary Sunday 08:00 UTC. "
+            "Ctrl+C to stop."
+        )
         try:
             scheduler.start()
         except KeyboardInterrupt:

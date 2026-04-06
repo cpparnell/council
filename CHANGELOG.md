@@ -1,5 +1,18 @@
 # Changelog
 
+## Phase 4 — 2026-04-05
+
+### Added
+- `src/db/schema.py` — added `weekly_summaries` table (`window_start`, `window_end`, `summary`, `metrics_json`)
+- `src/db/store.py` — added `get_closed_trades_in_window`, `get_reflections_for_trades`, `get_cycles_in_window`, `save_weekly_summary`, `get_weekly_summaries`
+- `src/reporting/__init__.py` — new reporting package
+- `src/reporting/metrics.py` — `compute_sharpe_ratio` (annualised, sqrt(252)), `compute_max_drawdown` (equity-curve walk), `compute_expectancy` (avg_win × win_rate − avg_loss × loss_rate), `compute_council_consistency` (unanimous rate, confidence spread, veto rate), `compute_all_metrics` (all four, with target-met flags)
+- `src/reporting/weekly.py` — `run_weekly_summary`: loads week's trades + reflections + cycles, computes metrics, calls claude-sonnet-4-6 with `weekly_summary_v1.txt`, persists summary to DB; runnable as `python -m src.reporting.weekly`
+- `prompts/weekly_summary_v1.txt` — system prompt for the weekly summary agent (5 structured sections: performance verdict, pattern analysis, agent accuracy ranking, prompt refinement recommendations, next-period watchpoints)
+- `src/main.py` — `TRADING_MODE` wiring (`paper` = testnet, `live` = mainnet with `COUNCIL_LIVE_CONFIRMED=1` safety gate); `--weekly` CLI flag; weekly APScheduler job (Sunday 08:00 UTC)
+- `.env.example` — documented `TRADING_MODE`, `COUNCIL_LIVE_CONFIRMED`, `BINANCE_API_KEY/SECRET`, `COUNCIL_DB_PATH`, `DRY_RUN`
+- `tests/test_reporting.py` — 49 tests: Sharpe, max drawdown, expectancy, consistency, all-metrics, weekly message builder, `run_weekly_summary`, store windowed queries
+
 ## Phase 3 — 2026-04-05
 
 ### Added

@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select, update
 from sqlalchemy.engine import Engine
 
-from src.db.schema import cycles, portfolio_state, reflections, trades
+from src.db.schema import cycles, portfolio_state, reflections, trades, weekly_summaries
 from src.models import CouncilOutputs, DeliberationOutput, MarketContext
 
 INITIAL_CAPITAL = float(__import__("os").getenv("INITIAL_CAPITAL", "10000"))
@@ -219,3 +219,96 @@ def get_reflection(engine: Engine, trade_id: int) -> dict | None:
             select(reflections).where(reflections.c.trade_id == trade_id)
         ).mappings().first()
         return dict(row) if row else None
+
+
+# ---------------------------------------------------- windowed queries
+
+
+def get_closed_trades_in_window(
+    engine: Engine,
+    since: datetime,
+    until: datetime,
+) -> list[dict]:
+    """Return all closed/stopped trades with exit_time in [since, until)."""
+    with engine.connect() as conn:
+        rows = conn.execute(
+            select(trades)
+            .where(
+                trades.c.status.in_(["closed", "stopped"]),
+                trades.c.exit_time >= since,
+                trades.c.exit_time < until,
+            )
+            .order_by(trades.c.exit_time.asc())
+        ).mappings().all()
+        return [dict(r) for r in rows]
+
+
+def get_reflections_for_trades(engine: Engine, trade_ids: list[int]) -> dict[int, str]:
+    """Return a {trade_id: summary} dict for the given trade ids."""
+    if not trade_ids:
+        return {}
+    with engine.connect() as conn:
+        rows = conn.execute(
+            select(reflections).where(reflections.c.trade_id.in_(trade_ids))
+        ).mappings().all()
+        return {r["trade_id"]: r["summary"] for r in rows}
+
+
+def get_cycles_in_window(
+    engine: Engine,
+    since: datetime,
+    until: datetime,
+) -> list[dict]:
+    """Return lightweight cycle rows (id, timestamp, signal, conviction, vetoed) in window."""
+    with engine.connect() as conn:
+        rows = conn.execute(
+            select(
+                cycles.c.id,
+                cycles.c.timestamp,
+                cycles.c.signal,
+                cycles.c.conviction,
+                cycles.c.vetoed,
+                cycles.c.council_outputs_json,
+            )
+            .where(
+                cycles.c.timestamp >= since,
+                cycles.c.timestamp < until,
+            )
+            .order_by(cycles.c.timestamp.asc())
+        ).mappings().all()
+        return [dict(r) for r in rows]
+
+
+# ---------------------------------------------- weekly_summaries
+
+
+def save_weekly_summary(
+    engine: Engine,
+    window_start: datetime,
+    window_end: datetime,
+    summary: str,
+    metrics: dict,
+) -> int:
+    """Insert a weekly summary row and return its id."""
+    with engine.begin() as conn:
+        result = conn.execute(
+            weekly_summaries.insert().values(
+                window_start=window_start,
+                window_end=window_end,
+                summary=summary,
+                metrics_json=json.dumps(metrics),
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+        return result.inserted_primary_key[0]
+
+
+def get_weekly_summaries(engine: Engine, limit: int = 10) -> list[dict]:
+    """Return the most recent weekly summaries, newest first."""
+    with engine.connect() as conn:
+        rows = conn.execute(
+            select(weekly_summaries)
+            .order_by(weekly_summaries.c.created_at.desc())
+            .limit(limit)
+        ).mappings().all()
+        return [dict(r) for r in rows]
