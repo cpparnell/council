@@ -47,7 +47,7 @@ async def assemble_context(
 
     Args:
         exchange: Pre-built ccxt exchange instance.  Defaults to a
-                  Binance testnet exchange (sandbox=True).
+                  Kraken exchange instance.
         portfolio: Current portfolio state dict matching PortfolioData schema.
                    Defaults to an empty $10 000 paper portfolio.
         timestamp: Context timestamp. Defaults to datetime.now(utc). Pass a

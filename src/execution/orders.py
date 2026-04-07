@@ -1,5 +1,5 @@
 """
-Order placement against Binance (testnet by default).
+Order placement against Kraken.
 
 All public functions wrap exchange calls with retry logic (max 3 attempts,
 exponential back-off) as required by the spec.  On final failure they raise
@@ -49,7 +49,7 @@ def place_market_buy(
 
     Args:
         exchange: Authenticated ccxt exchange instance.
-        symbol:   Trading pair, e.g. "BTC/USDT".
+        symbol:   Trading pair, e.g. "BTC/USD".
         amount_btc: Quantity to buy in BTC.
 
     Returns:

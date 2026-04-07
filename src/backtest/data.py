@@ -2,19 +2,22 @@
 Historical data fetching and slicing for backtesting.
 
 Provides:
-- fetch_full_ohlcv: Download all daily OHLCV candles for a date range via CCXT.
+- fetch_full_ohlcv: Download daily OHLCV candles via Yahoo Finance (BTC-USD).
 - slice_ohlcv: Return a lookback window with strict no-lookahead enforcement.
 - fetch_historical_sentiment: Download Fear & Greed history from Alternative.me.
 - get_sentiment_for_date: Look up the closest sentiment snapshot for a given date.
 - NEUTRAL_NEWS_STUB: Placeholder news list used for all backtest cycles.
+
+Note: yfinance (Yahoo Finance) is used for historical data because Kraken's
+public OHLC API only provides the most recent ~720 daily candles (~2 years).
+yfinance provides BTC-USD history back to 2014 with no API key required.
 """
 
 from datetime import date, datetime, timezone
 
 import httpx
 import pandas as pd
-
-from src.data.price import SYMBOL, TIMEFRAME
+import yfinance as yf
 
 # ------------------------------------------------------------------ Constants
 
@@ -40,17 +43,15 @@ _FNG_URL = "https://api.alternative.me/fng/"
 
 
 def fetch_full_ohlcv(
-    exchange,
     start_date: datetime,
     end_date: datetime,
 ) -> pd.DataFrame:
-    """Download all daily OHLCV candles from start_date to end_date via CCXT.
+    """Download daily BTC-USD OHLCV candles via Yahoo Finance.
 
-    Handles pagination — CCXT returns at most 1000 candles per request, so
-    multiple requests are made for ranges longer than ~2.7 years.
+    Uses yfinance which provides history back to 2014 with no API key.
+    The end_date is exclusive (consistent with Python date-range convention).
 
     Args:
-        exchange: A ccxt exchange instance (use mainnet for historical data).
         start_date: Inclusive start of the desired range (UTC).
         end_date: Exclusive end of the desired range (UTC).
 
@@ -58,40 +59,32 @@ def fetch_full_ohlcv(
         DataFrame with columns open/high/low/close/volume indexed by UTC date.
 
     Raises:
-        ValueError: If fewer than 200 candles are returned (insufficient for EMA-200).
+        ValueError: If no data is returned or fewer than 200 candles are
+                    available (insufficient for EMA-200 computation).
     """
-    since_ms = int(start_date.timestamp() * 1000)
-    end_ms = int(end_date.timestamp() * 1000)
+    df = yf.download(
+        "BTC-USD",
+        start=start_date.strftime("%Y-%m-%d"),
+        end=end_date.strftime("%Y-%m-%d"),
+        interval="1d",
+        progress=False,
+        auto_adjust=True,
+    )
 
-    all_rows: list[list] = []
-    current_since = since_ms
-
-    while True:
-        batch = exchange.fetch_ohlcv(SYMBOL, TIMEFRAME, since=current_since, limit=1000)
-        if not batch:
-            break
-        all_rows.extend(batch)
-        last_ts = batch[-1][0]
-        if last_ts >= end_ms or len(batch) < 1000:
-            break
-        # Advance past the last returned candle
-        current_since = last_ts + 1
-
-    if not all_rows:
+    if df.empty:
         raise ValueError("No OHLCV data returned for the requested date range.")
 
-    df = pd.DataFrame(
-        all_rows, columns=["timestamp", "open", "high", "low", "close", "volume"]
-    )
-    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
-    df = df.set_index("timestamp")
+    # yfinance 0.2+ returns MultiIndex columns — flatten to first level
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
 
-    # Drop any rows at or beyond end_date
-    if end_date.tzinfo is None:
-        end_ts = pd.Timestamp(end_date).tz_localize("UTC")
+    df.columns = [c.lower() for c in df.columns]
+
+    # Ensure UTC-aware index
+    if df.index.tz is None:
+        df.index = df.index.tz_localize("UTC")
     else:
-        end_ts = pd.Timestamp(end_date).tz_convert("UTC")
-    df = df[df.index < end_ts]
+        df.index = df.index.tz_convert("UTC")
 
     if len(df) < 200:
         raise ValueError(

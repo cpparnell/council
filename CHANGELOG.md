@@ -1,5 +1,53 @@
 # Changelog
 
+## Bugfix — 2026-04-06 (fractional trading + dotenv)
+
+### Fixed
+- `src/backtest/engine.py` — switched from `Backtest` to `FractionalBacktest` (backtesting.lib); BTC trades in fractional units so any `--capital` value now works without orders being silently canceled
+- `src/backtest/signals.py` — replaced `sl_price`/`tp_price` (raw USD) with `sl_pct`/`tp_pct` (ratio relative to close, e.g. 0.95 = 5% stop below close); `FractionalBacktest` scales OHLCV prices internally (to satoshi units) so absolute USD prices caused constraint failures (`SL < execution_price < TP` always failed against the scaled price)
+- `src/backtest/engine.py` strategy — `next()` now computes `sl = Close * sl_pct` and `tp = Close * tp_pct`, which scales correctly under any price transformation
+- `tests/test_backtest.py` — updated all test fixtures and `_make_signals_df` to use `sl_pct`/`tp_pct`; `_run_strategy` cash reverted to `$10,000` (fractional support makes large cash workaround unnecessary)
+
+## Bugfix — 2026-04-06
+
+### Fixed
+- `src/main.py`, `src/backtest/engine.py` — added `load_dotenv()` call at startup; `.env` file was never being read, so `ANTHROPIC_API_KEY` and all other env vars were silently missing at runtime
+
+## v1 Phase 6 (Historical Data Source) — 2026-04-06
+
+### Changed
+- `src/backtest/data.py` — `fetch_full_ohlcv` rewritten to use `yfinance.download("BTC-USD")` instead of CCXT; removes exchange parameter and pagination loop; handles MultiIndex columns (yfinance 0.2+); UTC-localizes index
+- `src/backtest/engine.py` — `run_backtest` no longer creates a Kraken exchange for data fetching; `get_exchange` import removed
+- `pyproject.toml` — added `yfinance>=0.2.0`
+
+### Fixed
+- Kraken's public OHLC API only serves the most recent ~720 daily candles regardless of the `since` parameter; requesting data older than that (e.g. `--start 2024-01-01` from April 2026) returned 0 candles. yfinance provides BTC-USD history back to 2014 with no API key.
+
+### Tests
+- `tests/test_backtest.py` — replaced CCXT-based `fetch_full_ohlcv` tests with yfinance mocks; removed `get_exchange` mock from `run_backtest` tests
+
+## v1 Phase 5 (Exchange Migration) — 2026-04-06 (revised)
+
+### Fixed
+- `src/data/price.py` — corrected CCXT symbol from `"XBT/USD"` to `"BTC/USD"`; CCXT normalizes Kraken's internal XBT ticker to BTC in its unified API, so `XBT/USD` raises `BadSymbol` at runtime
+
+## v1 Phase 5 (Exchange Migration) — 2026-04-06
+
+### Changed
+- `src/data/price.py` — replaced `ccxt.binance` with `ccxt.kraken`; `SYMBOL` changed from `"BTC/USDT"` to `"XBT/USD"`; removed Binance testnet URL logic; credentials now read from `KRAKEN_API_KEY` / `KRAKEN_SECRET`; `sandbox` param retained for interface compat but ignored (Kraken has no spot sandbox)
+- `src/execution/router.py` — `SYMBOL = "XBT/USD"`
+- `src/execution/state.py` — default symbol updated to `"XBT/USD"`
+- `src/execution/orders.py` — docstring updated (Binance → Kraken)
+- `src/db/store.py` — default symbol in `get_open_trade` updated to `"XBT/USD"`
+- `src/main.py` — `SYMBOL = "XBT/USD"`; env var docs reflect Kraken credentials; paper trading note updated (DRY_RUN=1 replaces testnet)
+- `src/data/assembler.py` — docstring updated
+- `.env.example` — replaced `BINANCE_TESTNET_API_KEY/SECRET` and `BINANCE_API_KEY/SECRET` with `KRAKEN_API_KEY` / `KRAKEN_SECRET`
+- `tests/test_execution.py`, `tests/test_db.py`, `tests/test_reporting.py` — all `"BTC/USDT"` references updated to `"XBT/USD"`
+
+**Why:** Binance is geo-restricted in the United States. Kraken is fully US-accessible, free for market data, and provides BTC/USD history back to 2013 via CCXT public endpoints.
+
+**Paper trading:** Kraken has no spot sandbox. Paper trading uses `DRY_RUN=1` (signals logged, no orders placed). Live trading requires `KRAKEN_API_KEY` + `KRAKEN_SECRET`.
+
 ## v1 Phase 1–4 (Backtesting) — 2026-04-06
 
 ### Added
@@ -21,7 +69,7 @@
 - `src/backtest/data.py` — `fetch_full_ohlcv` now correctly handles timezone-aware `end_date` arguments using `tz_localize`/`tz_convert` instead of `pd.Timestamp(dt, tz=...)` which raises on already-aware datetimes
 - `tests/test_backtest.py` — `_run_strategy` default cash raised from $10k to $1M so 20% position sizing can purchase at least one whole BTC unit at realistic price levels ($40k–$50k) without backtesting.py silently canceling orders
 
-## Phase 4 — 2026-04-05
+## v0 Phase 4 — 2026-04-05
 
 ### Added
 - `src/db/schema.py` — added `weekly_summaries` table (`window_start`, `window_end`, `summary`, `metrics_json`)
@@ -34,7 +82,7 @@
 - `.env.example` — documented `TRADING_MODE`, `COUNCIL_LIVE_CONFIRMED`, `BINANCE_API_KEY/SECRET`, `COUNCIL_DB_PATH`, `DRY_RUN`
 - `tests/test_reporting.py` — 49 tests: Sharpe, max drawdown, expectancy, consistency, all-metrics, weekly message builder, `run_weekly_summary`, store windowed queries
 
-## Phase 3 — 2026-04-05
+## v0 Phase 3 — 2026-04-05
 
 ### Added
 - `src/db/schema.py` — SQLAlchemy table definitions (`cycles`, `trades`, `portfolio_state`, `reflections`)
@@ -50,7 +98,7 @@
 - `tests/test_reflection.py` — 8 tests for the reflection agent
 - `sqlalchemy>=2.0.0` and `apscheduler>=3.10.0` added to dependencies
 
-## Phase 2 — Agent Framework
+## v0 Phase 2 — Agent Framework
 
 ### Added
 - `src/models.py` — extended with all agent output models: `TechnicalAnalystOutput`, `SentimentAnalystOutput`, `FundamentalAnalystOutput`, `RiskManagerOutput`, `CouncilOutputs`, `DeliberationOutput`, `AgentWeights`
@@ -68,7 +116,7 @@
 - `prompts/deliberation_v1.txt` — system prompt for Deliberation Chair (includes consensus rules: all-3-agree ≥70% → full size; 2-of-3 ≥60% → 50% size; else HOLD)
 - `tests/test_agents.py` — 38 tests: `call_agent` base utility, individual agent schema validation, deliberation consensus logic, runner veto short-circuit, prompt file existence checks
 
-## Phase 1 — Data Pipeline + Tier-0 Validation
+## v0 Phase 1 — Data Pipeline + Tier-0 Validation
 
 ### Added
 - `src/models.py` — Pydantic v2 models for the full context schema: `PriceData`, `IndicatorData`, `NewsItem`, `SentimentData`, `OnchainData`, `PortfolioData`, `MarketContext`; literal types for `Direction`, `MACDSignal`, `BBPosition`, `Regime`, etc.

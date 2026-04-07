@@ -18,12 +18,16 @@ import logging
 import os
 from datetime import datetime, timezone
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import pandas as pd
-from backtesting import Backtest, Strategy
+from backtesting import Strategy
+from backtesting.lib import FractionalBacktest
 
 from src.backtest.data import fetch_full_ohlcv, fetch_historical_sentiment
 from src.backtest.signals import generate_signals
-from src.data.price import get_exchange
 
 logger = logging.getLogger(__name__)
 
@@ -47,15 +51,16 @@ class LLMCouncilStrategy(Strategy):
     def next(self):
         signal = self.data.signal[-1]
         size_pct = self.data.size_pct[-1]
-        sl_price = self.data.sl_price[-1]
-        tp_price = self.data.tp_price[-1]
+        sl_pct = self.data.sl_pct[-1]
+        tp_pct = self.data.tp_pct[-1]
 
         if signal == "BUY" and not self.position:
-            if sl_price > 0 and size_pct > 0:
+            if sl_pct > 0 and size_pct > 0:
+                current_close = self.data.Close[-1]
                 self.buy(
                     size=size_pct / 100,
-                    sl=sl_price,
-                    tp=tp_price if tp_price > 0 else None,
+                    sl=current_close * sl_pct,
+                    tp=current_close * tp_pct if tp_pct > 0 else None,
                 )
         elif signal == "SELL" and self.position:
             self.position.close()
@@ -90,10 +95,8 @@ async def run_backtest(
     Returns:
         A dict of formatted backtest statistics.
     """
-    exchange = get_exchange(sandbox=False)
-
     logger.info("Fetching OHLCV history %s → %s", start_date.date(), end_date.date())
-    full_ohlcv = fetch_full_ohlcv(exchange, start_date, end_date)
+    full_ohlcv = fetch_full_ohlcv(start_date, end_date)
 
     logger.info("Fetching historical Fear & Greed sentiment")
     sentiment_history = fetch_historical_sentiment()
@@ -120,18 +123,18 @@ async def run_backtest(
         "volume": "Volume",
     })
 
-    bt = Backtest(
+    bt = FractionalBacktest(
         bt_df,
         LLMCouncilStrategy,
         cash=initial_capital,
-        commission=0.001,  # 0.1% per side (Binance spot approximation)
+        commission=0.001,  # 0.1% per side (Kraken spot approximation)
         exclusive_orders=True,
     )
     stats = bt.run()
 
     if save_signals_csv:
-        today = datetime.now(timezone.utc).strftime("%Y%m%d")
-        csv_path = f"backtest_signals_{today}.csv"
+        now = datetime.now(timezone.utc)
+        csv_path = f"tmp/backtest_signals_{now}.csv"
         signals_df.to_csv(csv_path)
         logger.info("Signals saved to %s", csv_path)
 

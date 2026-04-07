@@ -211,3 +211,6 @@ __marimo__/
 
 # Misc.
 NOTES.md
+
+# Temporary files
+tmp/

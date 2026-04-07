@@ -11,7 +11,7 @@ from sqlalchemy.engine import Engine
 from src.db.store import get_open_trade, get_portfolio_state
 
 
-def build_portfolio_dict(engine: Engine, symbol: str = "BTC/USDT") -> dict:
+def build_portfolio_dict(engine: Engine, symbol: str = "BTC/USD") -> dict:
     """Build a PortfolioData-compatible dict from the current DB state.
 
     Args:

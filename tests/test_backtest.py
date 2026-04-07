@@ -114,41 +114,43 @@ class TestBacktestData:
 
     # ---- fetch_full_ohlcv (mocked CCXT) ----
 
-    def test_fetch_full_ohlcv_pagination(self):
-        """Should make multiple requests when the date range exceeds 1000 candles."""
-        # Build two batches of raw OHLCV data
-        base_ms = int(datetime(2021, 1, 1, tzinfo=timezone.utc).timestamp() * 1000)
-        day_ms = 86_400_000
+    def test_fetch_full_ohlcv_returns_data_with_correct_columns(self):
+        """fetch_full_ohlcv returns a DataFrame with lowercase OHLCV columns."""
+        n = 300
+        idx = pd.date_range("2022-01-01", periods=n, freq="D")
+        mock_df = pd.DataFrame({
+            "Open": [30_000.0] * n, "High": [31_000.0] * n,
+            "Low": [29_000.0] * n, "Close": [30_500.0] * n,
+            "Volume": [1_000.0] * n,
+        }, index=idx)
 
-        batch1 = [[base_ms + i * day_ms, 30000, 31000, 29000, 30500, 1000] for i in range(1000)]
-        batch2 = [[base_ms + (1000 + i) * day_ms, 30500, 31500, 29500, 31000, 1000] for i in range(200)]
+        start = datetime(2022, 1, 1, tzinfo=timezone.utc)
+        end = datetime(2022, 10, 28, tzinfo=timezone.utc)
 
-        exchange = MagicMock()
-        exchange.fetch_ohlcv.side_effect = [batch1, batch2, []]
+        with patch("src.backtest.data.yf.download", return_value=mock_df):
+            df = fetch_full_ohlcv(start, end)
 
-        start = datetime(2021, 1, 1, tzinfo=timezone.utc)
-        end = datetime(2023, 10, 1, tzinfo=timezone.utc)
-
-        df = fetch_full_ohlcv(exchange, start, end)
-        assert exchange.fetch_ohlcv.call_count >= 2
-        assert len(df) >= 200
         assert "open" in df.columns
         assert "close" in df.columns
+        assert len(df) >= 200
+        assert df.index.tz is not None  # must be timezone-aware
 
     def test_fetch_full_ohlcv_raises_on_insufficient_data(self):
         """Raises ValueError when fewer than 200 candles are returned."""
-        base_ms = int(datetime(2024, 1, 1, tzinfo=timezone.utc).timestamp() * 1000)
-        day_ms = 86_400_000
-        batch = [[base_ms + i * day_ms, 30000, 31000, 29000, 30500, 1000] for i in range(50)]
-
-        exchange = MagicMock()
-        exchange.fetch_ohlcv.side_effect = [batch, []]
+        n = 50
+        idx = pd.date_range("2024-01-01", periods=n, freq="D")
+        mock_df = pd.DataFrame({
+            "Open": [30_000.0] * n, "High": [31_000.0] * n,
+            "Low": [29_000.0] * n, "Close": [30_500.0] * n,
+            "Volume": [1_000.0] * n,
+        }, index=idx)
 
         start = datetime(2024, 1, 1, tzinfo=timezone.utc)
         end = datetime(2024, 3, 1, tzinfo=timezone.utc)
 
-        with pytest.raises(ValueError, match="200"):
-            fetch_full_ohlcv(exchange, start, end)
+        with patch("src.backtest.data.yf.download", return_value=mock_df):
+            with pytest.raises(ValueError, match="200"):
+                fetch_full_ohlcv(start, end)
 
     # ---- NEUTRAL_NEWS_STUB ----
 
@@ -346,27 +348,26 @@ class TestRunBacktest:
 
         signals = [signal_override or "HOLD"] * n
         size_pcts = [20.0 if s == "BUY" else 0.0 for s in signals]
-        sl_prices = [closes[i] * 0.95 if signals[i] == "BUY" else 0.0 for i in range(n)]
-        tp_prices = [closes[i] * 1.10 if signals[i] == "BUY" else 0.0 for i in range(n)]
+        sl_pcts = [0.95 if signals[i] == "BUY" else 0.0 for i in range(n)]
+        tp_pcts = [1.10 if signals[i] == "BUY" else 0.0 for i in range(n)]
 
         idx = pd.date_range(start, periods=n, freq="D", tz="UTC")
         return pd.DataFrame({
             "Open": opens, "High": highs, "Low": lows, "Close": closes, "Volume": 1000.0,
             "signal": signals, "size_pct": size_pcts,
-            "sl_price": sl_prices, "tp_price": tp_prices,
+            "sl_pct": sl_pcts, "tp_pct": tp_pcts,
             "conviction": ["medium"] * n, "vetoed": [False] * n,
         }, index=idx)
 
-    def _run_strategy(self, df: pd.DataFrame, cash: float = 1_000_000.0) -> object:
-        """Run backtesting.py Backtest and return stats.
+    def _run_strategy(self, df: pd.DataFrame, cash: float = 10_000.0) -> object:
+        """Run FractionalBacktest and return stats.
 
-        Cash defaults to 1_000_000 so that 20% position sizing buys at least
-        one whole BTC unit at realistic prices (~$40k-50k range).
+        FractionalBacktest supports fractional BTC units so any cash amount works.
         """
-        from backtesting import Backtest
+        from backtesting.lib import FractionalBacktest
         from src.backtest.engine import LLMCouncilStrategy
 
-        bt = Backtest(df, LLMCouncilStrategy, cash=cash, commission=0.001, exclusive_orders=True)
+        bt = FractionalBacktest(df, LLMCouncilStrategy, cash=cash, commission=0.001, exclusive_orders=True)
         return bt.run()
 
     def test_all_hold_signals_produces_zero_trades(self):
@@ -382,8 +383,8 @@ class TestRunBacktest:
         df.at[df.index[10], "signal"] = "BUY"
         df.at[df.index[10], "size_pct"] = 20.0
         close_at_10 = df["Close"].iloc[10]
-        df.at[df.index[10], "sl_price"] = close_at_10 * 0.95
-        df.at[df.index[10], "tp_price"] = close_at_10 * 1.10
+        df.at[df.index[10], "sl_pct"] = 0.95
+        df.at[df.index[10], "tp_pct"] = 1.10
         stats = self._run_strategy(df)
         assert int(stats["# Trades"]) >= 1
 
@@ -391,11 +392,10 @@ class TestRunBacktest:
         """BUY on day 10, SELL on day 20 should produce exactly 1 closed trade."""
         n = 60
         df = self._make_signals_df(n=n, signal_override="HOLD")
-        close_at_10 = df["Close"].iloc[10]
         df.at[df.index[10], "signal"] = "BUY"
         df.at[df.index[10], "size_pct"] = 20.0
-        df.at[df.index[10], "sl_price"] = close_at_10 * 0.95
-        df.at[df.index[10], "tp_price"] = 0.0
+        df.at[df.index[10], "sl_pct"] = 0.95
+        df.at[df.index[10], "tp_pct"] = 0.0
         df.at[df.index[20], "signal"] = "SELL"
         stats = self._run_strategy(df)
         assert int(stats["# Trades"]) >= 1
@@ -410,20 +410,20 @@ class TestRunBacktest:
 
         signals = ["HOLD"] * n
         size_pcts = [0.0] * n
-        sl_prices = [0.0] * n
-        tp_prices = [0.0] * n
+        sl_pcts = [0.0] * n
+        tp_pcts = [0.0] * n
 
-        # BUY on day 5 with sl just above the low on day 10
+        # BUY on day 5 with sl at 99.95% of close (just above the low on day 10)
         signals[5] = "BUY"
         size_pcts[5] = 20.0
-        sl_prices[5] = 39_980.0  # Low on day 10 is 39_900 → triggers stop
-        lows[10] = 39_500.0     # force a low below sl
+        sl_pcts[5] = 0.9995   # sl = 40_000 * 0.9995 = 39_980 → triggers when low hits 39_500
+        lows[10] = 39_500.0   # force a low below sl
 
         idx = pd.date_range("2024-01-01", periods=n, freq="D", tz="UTC")
         df = pd.DataFrame({
             "Open": opens, "High": highs, "Low": lows, "Close": closes, "Volume": 1000.0,
             "signal": signals, "size_pct": size_pcts,
-            "sl_price": sl_prices, "tp_price": tp_prices,
+            "sl_pct": sl_pcts, "tp_pct": tp_pcts,
             "conviction": ["medium"] * n, "vetoed": [False] * n,
         }, index=idx)
 
@@ -447,17 +447,16 @@ class TestRunBacktest:
             "open": 40_000.0, "high": 41_000.0, "low": 39_000.0,
             "close": 40_500.0, "volume": 1000.0,
             "signal": "HOLD", "size_pct": 0.0,
-            "sl_price": 0.0, "tp_price": 0.0,
+            "sl_pct": 0.0, "tp_pct": 0.0,
             "conviction": "medium", "vetoed": False,
         }, index=idx)
 
-        with patch("src.backtest.engine.get_exchange", return_value=MagicMock()):
-            with patch("src.backtest.engine.fetch_full_ohlcv", return_value=full_ohlcv):
-                with patch("src.backtest.engine.fetch_historical_sentiment", return_value=sentiment_history):
-                    with patch("src.backtest.engine.generate_signals", new=AsyncMock(return_value=mock_signals)):
-                        result = asyncio.get_event_loop().run_until_complete(
-                            run_backtest(start, end, save_signals_csv=False)
-                        )
+        with patch("src.backtest.engine.fetch_full_ohlcv", return_value=full_ohlcv):
+            with patch("src.backtest.engine.fetch_historical_sentiment", return_value=sentiment_history):
+                with patch("src.backtest.engine.generate_signals", new=AsyncMock(return_value=mock_signals)):
+                    result = asyncio.get_event_loop().run_until_complete(
+                        run_backtest(start, end, save_signals_csv=False)
+                    )
 
         required_keys = ["return_pct", "sharpe_ratio", "max_drawdown_pct", "win_rate_pct", "trades", "cycles"]
         for key in required_keys:
@@ -481,17 +480,16 @@ class TestRunBacktest:
             "open": 40_000.0, "high": 41_000.0, "low": 39_000.0,
             "close": 40_500.0, "volume": 1000.0,
             "signal": "HOLD", "size_pct": 0.0,
-            "sl_price": 0.0, "tp_price": 0.0,
+            "sl_pct": 0.0, "tp_pct": 0.0,
             "conviction": "medium", "vetoed": False,
         }, index=idx)
 
-        with patch("src.backtest.engine.get_exchange", return_value=MagicMock()):
-            with patch("src.backtest.engine.fetch_full_ohlcv", return_value=full_ohlcv):
-                with patch("src.backtest.engine.fetch_historical_sentiment", return_value=sentiment_history):
-                    with patch("src.backtest.engine.generate_signals", new=AsyncMock(return_value=mock_signals)):
-                        result = asyncio.get_event_loop().run_until_complete(
-                            run_backtest(start, end, save_signals_csv=False)
-                        )
+        with patch("src.backtest.engine.fetch_full_ohlcv", return_value=full_ohlcv):
+            with patch("src.backtest.engine.fetch_historical_sentiment", return_value=sentiment_history):
+                with patch("src.backtest.engine.generate_signals", new=AsyncMock(return_value=mock_signals)):
+                    result = asyncio.get_event_loop().run_until_complete(
+                        run_backtest(start, end, save_signals_csv=False)
+                    )
 
         assert isinstance(result["sharpe_ratio"], float)
 

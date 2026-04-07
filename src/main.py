@@ -13,13 +13,11 @@ Weekly summary only:
 Environment variables
 ---------------------
 ANTHROPIC_API_KEY         Required — used by all LLM agents.
-BINANCE_TESTNET_API_KEY   Required for order execution in paper mode.
-BINANCE_TESTNET_SECRET    Required for order execution in paper mode.
-BINANCE_API_KEY           Required for live trading (TRADING_MODE=live).
-BINANCE_SECRET            Required for live trading (TRADING_MODE=live).
+KRAKEN_API_KEY            Required for live order execution.
+KRAKEN_SECRET             Required for live order execution.
 COUNCIL_DB_PATH           Path to SQLite file (default: ./council.db).
 INITIAL_CAPITAL           Starting paper capital in USD (default: 10000).
-TRADING_MODE              "paper" (default, Binance testnet) or "live" (mainnet).
+TRADING_MODE              "paper" (default, DRY_RUN) or "live" (Kraken mainnet).
 COUNCIL_LIVE_CONFIRMED    Must be "1" when TRADING_MODE=live — safety gate.
 DRY_RUN                   If "1", skips order execution entirely (logs only).
 """
@@ -29,6 +27,10 @@ import asyncio
 import logging
 import os
 import sys
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 import anthropic
 
@@ -51,7 +53,7 @@ logger = logging.getLogger("council.main")
 
 DRY_RUN = os.getenv("DRY_RUN", "0") == "1"
 TRADING_MODE = os.getenv("TRADING_MODE", "paper").lower()
-SYMBOL = "BTC/USDT"
+SYMBOL = "BTC/USD"
 
 # ── Live trading safety gate ───────────────────────────────────────────────
 if TRADING_MODE == "live":

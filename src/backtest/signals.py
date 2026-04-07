@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 # Required columns in the output DataFrame
 SIGNAL_COLUMNS = [
     "open", "high", "low", "close", "volume",
-    "signal", "size_pct", "sl_price", "tp_price", "conviction", "vetoed",
+    "signal", "size_pct", "sl_pct", "tp_pct", "conviction", "vetoed",
 ]
 
 
@@ -159,8 +159,12 @@ async def generate_signals(
             conviction = result.deliberation.conviction
             vetoed = result.vetoed
             size_pct = result.outputs.risk.approved_position_size_pct
+            close_price = float(ohlcv_slice.iloc[-1]["close"])
             sl_price = result.outputs.risk.recommended_stop_loss
             tp_price = result.outputs.risk.recommended_take_profit
+            # Store as ratios relative to close so they work at any price scale
+            sl_pct = (sl_price / close_price) if close_price > 0 and sl_price > 0 else 0.0
+            tp_pct = (tp_price / close_price) if close_price > 0 and tp_price > 0 else 0.0
 
             logger.info(
                 "Cycle %s: signal=%s conviction=%s vetoed=%s",
@@ -173,8 +177,8 @@ async def generate_signals(
             conviction = "low"
             vetoed = False
             size_pct = 0.0
-            sl_price = 0.0
-            tp_price = 0.0
+            sl_pct = 0.0
+            tp_pct = 0.0
             today_row = _get_today_row(full_ohlcv, current)
 
         # 6. Record row
@@ -187,8 +191,8 @@ async def generate_signals(
             "volume": float(today_row["volume"]) if today_row is not None else 0.0,
             "signal": signal,
             "size_pct": size_pct,
-            "sl_price": sl_price,
-            "tp_price": tp_price,
+            "sl_pct": sl_pct,
+            "tp_pct": tp_pct,
             "conviction": conviction,
             "vetoed": vetoed,
         })

@@ -5,7 +5,7 @@ A Bitcoin swing trading bot that uses a council of specialised LLM agents to gen
 ## Architecture
 
 ```
-Data Pipeline (CCXT/Binance, CryptoPanic, Alternative.me, Glassnode)
+Data Pipeline (CCXT/Kraken, CryptoPanic, Alternative.me, Glassnode)
     │
     ▼
 Tier-0 Validation (price freshness, news count, drawdown halt, ATR halt)
@@ -93,10 +93,8 @@ pytest tests/test_agents.py::test_run_council_hold_on_veto -v  # single test
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `ANTHROPIC_API_KEY` | Yes | — | Claude API key |
-| `BINANCE_TESTNET_API_KEY` | Paper mode | — | Binance testnet key |
-| `BINANCE_TESTNET_SECRET` | Paper mode | — | Binance testnet secret |
-| `BINANCE_API_KEY` | Live mode | — | Binance mainnet key |
-| `BINANCE_SECRET` | Live mode | — | Binance mainnet secret |
+| `KRAKEN_API_KEY` | Live mode | — | Kraken API key |
+| `KRAKEN_SECRET` | Live mode | — | Kraken private key |
 | `COUNCIL_DB_PATH` | No | `./council.db` | SQLite database path |
 | `INITIAL_CAPITAL` | No | `10000` | Starting paper capital (USD) |
 | `TRADING_MODE` | No | `paper` | `paper` (testnet) or `live` (mainnet) |
@@ -113,14 +111,17 @@ pytest tests/test_agents.py::test_run_council_hold_on_veto -v  # single test
 - **Phase 2** ✅ Agent framework (4 agents + deliberation)
 - **Phase 3** ✅ Execution layer + SQLite logging + reflection loop
 - **Phase 4** ✅ Performance metrics + weekly summary agent
-- **Phase 5** Paper trading (60 days minimum on live data with simulated capital)
-- **Phase 6** Live deployment (≤ $500 initial capital)
+- **Phase 5** ✅ Exchange migration: Binance → Kraken (US-accessible, free)
+- **Phase 6** Paper trading (60 days minimum, DRY_RUN=1)
+- **Phase 7** Live deployment (≤ $500 initial capital, Kraken mainnet)
 
 ### v1 — Backtesting
 - **Phase 1** ✅ Patch data layer (override params, `skip_freshness`)
 - **Phase 2** ✅ Historical data module (`fetch_full_ohlcv`, `slice_ohlcv`, sentiment history)
 - **Phase 3** ✅ Async signal generation loop (`generate_signals`, `_PortfolioTracker`)
 - **Phase 4** ✅ `backtesting.py` strategy + CLI runner (`run_backtest`)
+- **Phase 5** ✅ Exchange migration: Binance → Kraken
+- **Phase 6** ✅ Historical data source: Kraken OHLCV → Yahoo Finance (yfinance; unlimited history)
 
 ## Success Targets (Phase 5 evaluation)
 
