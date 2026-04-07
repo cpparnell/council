@@ -126,13 +126,20 @@ def check_volatility_halt(ctx: MarketContext) -> None:
         )
 
 
-def validate_context(ctx: MarketContext) -> None:
+def validate_context(ctx: MarketContext, skip_freshness: bool = False) -> None:
     """Run all Tier-0 checks in order.
 
     Call this once after assembling the context and before invoking any agent.
     Any exception here must produce a HOLD signal.
+
+    Args:
+        ctx: The assembled MarketContext to validate.
+        skip_freshness: When True, the price-freshness check is skipped.
+                        Pass True for historical backtest contexts whose
+                        timestamps are intentionally in the past.
     """
-    validate_price_freshness(ctx)
+    if not skip_freshness:
+        validate_price_freshness(ctx)
     validate_news_count(ctx)
     validate_numeric_fields(ctx)
     check_drawdown_halt(ctx)

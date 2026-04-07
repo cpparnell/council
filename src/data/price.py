@@ -47,14 +47,24 @@ def get_exchange(sandbox: bool = True) -> ccxt.Exchange:
     return ccxt.binance(kwargs)
 
 
-def fetch_ohlcv(exchange: ccxt.Exchange, limit: int = 250) -> pd.DataFrame:
+def fetch_ohlcv(
+    exchange: ccxt.Exchange,
+    limit: int = 250,
+    since: int | None = None,
+) -> pd.DataFrame:
     """Fetch the most recent *limit* daily candles as a DataFrame.
+
+    Args:
+        exchange: ccxt exchange instance.
+        limit: Number of candles to fetch.
+        since: Start timestamp in milliseconds since epoch (ccxt convention).
+               When None, fetches the most recent candles.
 
     Columns: open, high, low, close, volume  (indexed by UTC timestamp).
     Raises ValueError if fewer than 200 candles are returned — the minimum
     needed for EMA-200 computation.
     """
-    raw = exchange.fetch_ohlcv(SYMBOL, TIMEFRAME, limit=limit)
+    raw = exchange.fetch_ohlcv(SYMBOL, TIMEFRAME, since=since, limit=limit)
     if len(raw) < 200:
         raise ValueError(
             f"Only {len(raw)} candles returned; need ≥ 200 for EMA-200."

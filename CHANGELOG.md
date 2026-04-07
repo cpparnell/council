@@ -1,5 +1,26 @@
 # Changelog
 
+## v1 Phase 1–4 (Backtesting) — 2026-04-06
+
+### Added
+- `src/backtest/__init__.py` — new backtest package
+- `src/backtest/data.py` — `fetch_full_ohlcv` (paginated CCXT download), `slice_ohlcv` (strict no-lookahead enforcement), `fetch_historical_sentiment` (Alternative.me Fear & Greed history), `get_sentiment_for_date` (nearest-earlier fallback), `NEUTRAL_NEWS_STUB` (15 generic items), `NEUTRAL_ONCHAIN_STUB`
+- `src/backtest/signals.py` — `generate_signals`: async LLM council loop over each historical date; `_PortfolioTracker` dataclass (cash/position/drawdown tracking); `SIGNAL_COLUMNS` constant; graceful HOLD fallback on `AgentError`
+- `src/backtest/engine.py` — `LLMCouncilStrategy` (backtesting.py Strategy replaying pre-computed signals); `run_backtest` async runner (fetch → signals → simulate → formatted stats dict); CLI via `python -m src.backtest.engine --start --end --capital`
+- `tests/test_backtest.py` — 26 tests: `TestBacktestData` (slice no-lookahead, pagination, sentiment fallbacks, news stub), `TestGenerateSignals` (column schema, date count, lookahead guard, error fallback, portfolio tracker), `TestRunBacktest` (strategy execution, stop-loss trigger, stats keys)
+- `backtesting>=0.3.3` added to `pyproject.toml`
+
+### Changed
+- `src/data/price.py` — added `since: int | None = None` to `fetch_ohlcv` for historical backfill
+- `src/data/assembler.py` — added `timestamp`, `news_override`, `sentiment_override`, `onchain_override`, `skip_freshness` optional params to `assemble_context`; backward compatible (all default to `None`/`False`)
+- `src/validation.py` — added `skip_freshness: bool = False` to `validate_context`; when `True`, skips price freshness check (used by backtest engine)
+- `tests/test_assembler.py` — updated to cover new override parameters
+- `tests/test_validation.py` — updated to cover `skip_freshness` flag
+
+### Fixed
+- `src/backtest/data.py` — `fetch_full_ohlcv` now correctly handles timezone-aware `end_date` arguments using `tz_localize`/`tz_convert` instead of `pd.Timestamp(dt, tz=...)` which raises on already-aware datetimes
+- `tests/test_backtest.py` — `_run_strategy` default cash raised from $10k to $1M so 20% position sizing can purchase at least one whole BTC unit at realistic price levels ($40k–$50k) without backtesting.py silently canceling orders
+
 ## Phase 4 — 2026-04-05
 
 ### Added

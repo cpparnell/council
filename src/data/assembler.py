@@ -37,6 +37,11 @@ from src.validation import ValidationError, validate_context
 async def assemble_context(
     exchange: ccxt.Exchange | None = None,
     portfolio: dict | None = None,
+    timestamp: datetime | None = None,
+    news_override: list[dict] | None = None,
+    sentiment_override: dict | None = None,
+    onchain_override: dict | None = None,
+    skip_freshness: bool = False,
 ) -> MarketContext:
     """Assemble the full context object for one council cycle.
 
@@ -45,6 +50,17 @@ async def assemble_context(
                   Binance testnet exchange (sandbox=True).
         portfolio: Current portfolio state dict matching PortfolioData schema.
                    Defaults to an empty $10 000 paper portfolio.
+        timestamp: Context timestamp. Defaults to datetime.now(utc). Pass a
+                   historical datetime when assembling backtest contexts.
+        news_override: If provided, skip live CryptoPanic fetch and use this
+                       list of news dicts instead.
+        sentiment_override: If provided, skip live Alternative.me fetch and use
+                            this sentiment dict instead.
+        onchain_override: If provided, skip live Glassnode stub and use this
+                          on-chain dict instead.
+        skip_freshness: When True, the Tier-0 price-freshness check is skipped.
+                        Required for historical backtest contexts whose timestamps
+                        are in the past.
 
     Returns:
         A validated MarketContext.
@@ -69,15 +85,21 @@ async def assemble_context(
     price_data = build_price_data(df)
     indicator_data = compute_indicators(df)
 
-    # --- Fetch async feeds in parallel ------------------------------------
-    news_items_raw, sentiment_raw, onchain_raw = await asyncio.gather(
-        fetch_news(),
-        fetch_sentiment(),
-        fetch_onchain(),
+    # --- Fetch async feeds in parallel (or use overrides) -----------------
+    async def _identity(value):
+        return value
+
+    fetched_news, fetched_sentiment, fetched_onchain = await asyncio.gather(
+        fetch_news() if news_override is None else _identity(news_override),
+        fetch_sentiment() if sentiment_override is None else _identity(sentiment_override),
+        fetch_onchain() if onchain_override is None else _identity(onchain_override),
     )
+    news_items_raw = fetched_news
+    sentiment_raw = fetched_sentiment
+    onchain_raw = fetched_onchain
 
     ctx = MarketContext(
-        timestamp=datetime.now(timezone.utc),
+        timestamp=timestamp if timestamp is not None else datetime.now(timezone.utc),
         asset="BTC/USD",
         price=PriceData(**price_data),
         indicators=IndicatorData(**indicator_data),
@@ -87,5 +109,5 @@ async def assemble_context(
         portfolio=PortfolioData(**portfolio),
     )
 
-    validate_context(ctx)
+    validate_context(ctx, skip_freshness=skip_freshness)
     return ctx
