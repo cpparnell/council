@@ -74,12 +74,16 @@ python -m src.backtest.engine \
 
 **Capital note:** Set `--capital` high enough that 20% position sizing can buy at least 1 BTC. At ~$50k/BTC you need at least `--capital 250000`.
 
-Signals are saved to `backtest_signals_YYYYMMDD.csv`. Output includes Return%, Sharpe, Max Drawdown, Win Rate, Avg Trade, and Expectancy.
+Each run creates a timestamped folder under `tmp/YYYYMMDD_HHMMSS/` containing:
+- `backtest_signals_<start>_<end>.csv` — per-day signal log, written one row per cycle (flushed immediately) so it survives a kill
+- `run.log` — full console output, written continuously (line-buffered) so it survives a kill
+
+Output includes Return%, Sharpe, Max Drawdown, Win Rate, Avg Trade, and Expectancy.
 
 ## Testing
 
 ```bash
-pytest -v                                    # all 236 tests
+pytest -v                                    # all 235 tests
 pytest tests/test_db.py -v                  # DB layer
 pytest tests/test_execution.py -v           # execution + router
 pytest tests/test_reporting.py -v           # metrics + weekly summary

@@ -6,7 +6,6 @@ Tests verify: prompt loading, message formatting, JSON parsing, schema
 validation, veto short-circuit, and asyncio.gather parallelism in the runner.
 """
 
-import json
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -145,9 +144,13 @@ VALID_DELIBERATION = {
 
 
 def _mock_response(payload: dict) -> MagicMock:
-    """Build a fake anthropic response object containing JSON."""
+    """Build a fake anthropic response with a tool_use block containing payload."""
+    block = MagicMock()
+    block.type = "tool_use"
+    block.input = payload
     msg = MagicMock()
-    msg.content = [MagicMock(text=json.dumps(payload))]
+    msg.content = [block]
+    msg.stop_reason = "tool_use"
     return msg
 
 
@@ -170,23 +173,17 @@ class TestCallAgent:
         assert result.direction == "BUY"
         assert result.confidence == 72
 
-    async def test_strips_markdown_fences(self):
-        from src.agents.base import call_agent
-        fenced = "```json\n" + json.dumps(VALID_TECHNICAL) + "\n```"
-        client = MagicMock()
-        client.messages.create = AsyncMock(return_value=MagicMock(content=[MagicMock(text=fenced)]))
-        result = await call_agent(
-            client, "claude-haiku-4-5", "system", "user", TechnicalAnalystOutput
-        )
-        assert result.direction == "BUY"
-
-    async def test_raises_on_non_json(self):
+    async def test_raises_on_missing_tool_use_block(self):
         from src.agents.base import AgentError, call_agent
+        # Simulate a response with no tool_use block (e.g. end_turn instead)
+        text_only_block = MagicMock()
+        text_only_block.type = "text"
+        response = MagicMock()
+        response.content = [text_only_block]
+        response.stop_reason = "end_turn"
         client = MagicMock()
-        client.messages.create = AsyncMock(
-            return_value=MagicMock(content=[MagicMock(text="not json at all")])
-        )
-        with pytest.raises(AgentError, match="non-JSON"):
+        client.messages.create = AsyncMock(return_value=response)
+        with pytest.raises(AgentError, match="tool_use block"):
             await call_agent(
                 client, "claude-haiku-4-5", "system", "user", TechnicalAnalystOutput
             )

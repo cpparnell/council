@@ -2,7 +2,6 @@
 Shared utilities for all council agents.
 """
 
-import json
 from pathlib import Path
 from typing import TypeVar
 
@@ -24,18 +23,6 @@ def load_prompt(filename: str) -> str:
     return path.read_text()
 
 
-def _extract_json(text: str) -> str:
-    """Strip markdown code fences if the model wraps its JSON output."""
-    text = text.strip()
-    if text.startswith("```"):
-        # Remove opening fence (```json or ```)
-        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-        # Remove closing fence
-        if text.endswith("```"):
-            text = text[:-3]
-    return text.strip()
-
-
 async def call_agent(
     client: anthropic.AsyncAnthropic,
     model: str,
@@ -45,29 +32,43 @@ async def call_agent(
 ) -> T:
     """Call a single LLM agent and parse its output into a Pydantic model.
 
+    Uses tool_use with tool_choice to force the API to return structured JSON,
+    avoiding markdown-wrapped or prose-mixed responses.
+
     Raises AgentError if the API call fails or the output does not validate.
     """
+    tool_name = "structured_output"
+    tool_def = {
+        "name": tool_name,
+        "description": "Return your analysis as structured JSON.",
+        "input_schema": output_model.model_json_schema(),
+    }
+
     try:
         response = await client.messages.create(
             model=model,
             max_tokens=1024,
             temperature=0,
             system=system_prompt,
+            tools=[tool_def],
+            tool_choice={"type": "tool", "name": tool_name},
             messages=[{"role": "user", "content": user_message}],
         )
     except anthropic.APIError as exc:
         raise AgentError(f"API error calling {model}: {exc}") from exc
 
-    raw = response.content[0].text
-    try:
-        data = json.loads(_extract_json(raw))
-    except json.JSONDecodeError as exc:
+    tool_block = next(
+        (block for block in response.content if block.type == "tool_use"),
+        None,
+    )
+    if tool_block is None:
         raise AgentError(
-            f"Agent ({model}) returned non-JSON output: {raw!r}"
-        ) from exc
+            f"Agent ({model}) did not return a tool_use block; "
+            f"stop_reason={response.stop_reason!r}"
+        )
 
     try:
-        return output_model.model_validate(data)
+        return output_model.model_validate(tool_block.input)
     except ValidationError as exc:
         raise AgentError(
             f"Agent ({model}) output failed schema validation: {exc}"

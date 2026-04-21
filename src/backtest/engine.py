@@ -16,7 +16,9 @@ import argparse
 import asyncio
 import logging
 import os
+import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -30,6 +32,61 @@ from src.backtest.data import fetch_full_ohlcv, fetch_historical_sentiment
 from src.backtest.signals import generate_signals
 
 logger = logging.getLogger(__name__)
+
+
+# ----------------------------------------------------------- Run output
+
+
+class _TeeStream:
+    """Mirrors writes to two streams simultaneously (e.g. stdout + log file)."""
+
+    def __init__(self, primary, secondary):
+        self._primary = primary
+        self._secondary = secondary
+
+    def write(self, data):
+        self._primary.write(data)
+        self._secondary.write(data)
+        self._secondary.flush()
+
+    def flush(self):
+        self._primary.flush()
+        self._secondary.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._primary, name)
+
+
+def _setup_run_dir(base: Path = Path("tmp")) -> tuple[Path, object]:
+    """Create a timestamped run directory and wire logging + stdout/stderr to a log file.
+
+    The log file is opened line-buffered and every logging record is flushed
+    immediately so output is preserved even if the process is killed mid-run.
+
+    Returns:
+        (run_dir, log_file_handle)
+    """
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    run_dir = base / stamp
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    log_path = run_dir / "run.log"
+    # buffering=1 → line-buffered; each newline triggers an OS write
+    log_file = open(log_path, "w", buffering=1, encoding="utf-8")  # noqa: SIM115
+
+    # Add a logging handler that writes to the same file handle.
+    # StreamHandler calls flush() after every emit, so no records are lost.
+    handler = logging.StreamHandler(log_file)
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)-8s %(name)s — %(message)s")
+    )
+    logging.getLogger().addHandler(handler)
+
+    # Tee stdout and stderr so print() calls are also captured.
+    sys.stdout = _TeeStream(sys.stdout, log_file)
+    sys.stderr = _TeeStream(sys.stderr, log_file)
+
+    return run_dir, log_file
 
 
 # ----------------------------------------------------------- Strategy
@@ -75,6 +132,7 @@ async def run_backtest(
     initial_capital: float = 10_000.0,
     client=None,
     save_signals_csv: bool = True,
+    run_dir: Path | None = None,
 ) -> dict:
     """Run a full LLM council backtest over the specified date range.
 
@@ -101,6 +159,15 @@ async def run_backtest(
     logger.info("Fetching historical Fear & Greed sentiment")
     sentiment_history = fetch_historical_sentiment()
 
+    # Resolve csv_path before generate_signals so rows can be streamed as they arrive.
+    csv_path: Path | None = None
+    if save_signals_csv:
+        stamp = start_date.strftime("%Y%m%d") + "_" + end_date.strftime("%Y%m%d")
+        filename = f"backtest_signals_{stamp}.csv"
+        csv_path = (run_dir / filename) if run_dir else Path(filename)
+
+    agent_log_dir = run_dir / "agents" if run_dir else None
+
     logger.info("Generating signals (LLM council)…")
     signals_df = await generate_signals(
         full_ohlcv=full_ohlcv,
@@ -109,10 +176,15 @@ async def run_backtest(
         end_date=end_date,
         initial_capital=initial_capital,
         client=client,
+        csv_path=csv_path,
+        agent_log_dir=agent_log_dir,
     )
 
     if signals_df.empty:
         raise ValueError("No signals generated — cannot run backtest.")
+
+    if csv_path is not None:
+        logger.info("Signals saved to %s", csv_path)
 
     # backtesting.py requires OHLCV columns to be title-cased
     bt_df = signals_df.rename(columns={
@@ -132,12 +204,6 @@ async def run_backtest(
     )
     stats = bt.run()
 
-    if save_signals_csv:
-        now = datetime.now(timezone.utc)
-        csv_path = f"tmp/backtest_signals_{now}.csv"
-        signals_df.to_csv(csv_path)
-        logger.info("Signals saved to %s", csv_path)
-
     n_cycles = len(signals_df)
     n_trades = int(stats.get("# Trades", 0))
 
@@ -152,7 +218,7 @@ async def run_backtest(
         "win_rate_pct": float(stats.get("Win Rate [%]", 0.0)),
         "avg_trade_pct": float(stats.get("Avg. Trade [%]", 0.0)),
         "expectancy_usd": float(stats.get("Expectancy [%]", 0.0)) * initial_capital / 100,
-        "csv_path": f"backtest_signals_{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv" if save_signals_csv else None,
+        "csv_path": str(csv_path) if csv_path else None,
         "_raw_stats": stats,
     }
     return formatted
@@ -170,8 +236,6 @@ def _print_results(result: dict) -> None:
     print(f"Avg Trade:        {result['avg_trade_pct']:+.1f}%")
     print(f"Expectancy:      ${result['expectancy_usd']:+.0f} / trade")
     print("─" * 38)
-    if result.get("csv_path"):
-        print(f"Signals saved to {result['csv_path']}")
 
 
 def _parse_args(argv=None):
@@ -201,6 +265,9 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     args = _parse_args()
 
+    run_dir, _log_fh = _setup_run_dir()
+    logger.info("Run output directory: %s", run_dir)
+
     start = datetime.strptime(args.start, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     end = datetime.strptime(args.end, "%Y-%m-%d").replace(tzinfo=timezone.utc)
 
@@ -210,6 +277,12 @@ if __name__ == "__main__":
             end_date=end,
             initial_capital=args.capital,
             save_signals_csv=args.save_csv,
+            run_dir=run_dir,
         )
     )
     _print_results(result)
+    if result.get("csv_path"):
+        print(f"Run folder:      {run_dir}/")
+        print(f"  signals CSV:   {Path(result['csv_path']).name}")
+        print(f"  agent logs:    agents/")
+        print(f"  run log:       run.log")

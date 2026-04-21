@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # ----------------------------------------------------------------- Shared
 Direction = Literal["BUY", "SELL", "HOLD"]
@@ -115,6 +115,13 @@ class RiskManagerOutput(BaseModel):
     recommended_take_profit: float
     risk_reward_ratio: float
     notes: str
+
+    @field_validator("recommended_stop_loss", "recommended_take_profit", "risk_reward_ratio", mode="before")
+    @classmethod
+    def strip_commas(cls, v):
+        if isinstance(v, str):
+            return v.replace(",", "")
+        return v
 
 
 # --------------------------------------------------------- Deliberation model

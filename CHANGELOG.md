@@ -1,5 +1,43 @@
 # Changelog
 
+## Update — 2026-04-20 (per-cycle agent response logs)
+
+### Added
+- `src/backtest/signals.py` — `_append_agent_log(path, date, data)`: appends a JSON Lines entry `{"date": "...", "output": {...}}` to an agent file and closes immediately; `generate_signals` accepts a new `agent_log_dir: Path | None` parameter and calls this after each successful cycle, writing `technical_analyst.json`, `sentiment_analyst.json`, `fundamental_analyst.json`, `risk_manager.json`, and `deliberation.json` under `tmp/YYYYMMDD_HHMMSS/agents/`
+- `src/backtest/engine.py` — derives `agent_log_dir = run_dir / "agents"` and passes it to `generate_signals`; end-of-run summary now prints the `agents/` folder
+
+### Fixed
+- `src/models.py` — `RiskManagerOutput`: added `field_validator` on `recommended_stop_loss`, `recommended_take_profit`, and `risk_reward_ratio` to strip commas before float parsing, fixing `AgentError` when the model returns formatted numbers like `'71,001.50'`
+
+## Update — 2026-04-20 (backtest run output to tmp/, incremental CSV)
+
+### Changed
+- `src/backtest/engine.py` — `_setup_run_dir` default base changed from `runs/` to `tmp/`; timestamped run folders now live under `tmp/YYYYMMDD_HHMMSS/`
+- `src/backtest/engine.py` — `run_backtest` now resolves `csv_path` before calling `generate_signals` and passes it in; the post-hoc `signals_df.to_csv()` call is removed
+- `src/backtest/signals.py` — `generate_signals` accepts a new `csv_path: Path | None` parameter; when set, opens the file before the signal loop, writes the header row, then flushes one CSV row per completed cycle so the file is preserved if the run is killed mid-way
+
+## Feature — 2026-04-20 (run output folder)
+
+### Added
+- `src/backtest/engine.py` — `_setup_run_dir(base)`: creates `runs/YYYYMMDD_HHMMSS/` on each invocation; adds a `logging.StreamHandler` pointing at `run.log` inside that directory (StreamHandler flushes after every record); tees `sys.stdout` and `sys.stderr` through `_TeeStream` so all `print()` output is also captured; uses `buffering=1` (line-buffered) so every newline triggers an OS write and output is preserved if the process is killed
+- `_TeeStream`: lightweight wrapper that mirrors writes to two streams simultaneously
+- `run_backtest` now accepts an optional `run_dir: Path` parameter; when provided, the signals CSV is written into that directory instead of the working directory
+- CSV filename changed from `backtest_signals_<full-datetime-with-tz>.csv` (contained colons, broke on some OS) to `backtest_signals_YYYYMMDD_YYYYMMDD.csv` (start/end dates)
+- End-of-run summary prints the run folder path, CSV filename, and log filename
+
+### Fixed
+- `run_backtest` previously called `datetime.now()` twice for the CSV filename, producing a different timestamp in the returned `csv_path` than the one used when writing the file
+
+## Bugfix — 2026-04-20 (structured JSON output via tool use)
+
+### Fixed
+- `src/agents/base.py` — replaced free-form text generation + markdown-fence stripping with Anthropic tool use (`tools` + `tool_choice={"type": "tool"}`); the API now returns a `tool_use` block whose `.input` is a guaranteed parsed dict, eliminating the `non-JSON output` errors caused by models wrapping responses in ` ```json ``` ` fences with trailing prose
+- Removed `_extract_json` helper and `import json` (no longer needed)
+- `AgentError` now raised with `"tool_use block"` message when the response contains no tool-use block (e.g. unexpected `end_turn`)
+
+### Tests
+- `tests/test_agents.py` — updated `_mock_response`/`_mock_client` to return a mock with `type="tool_use"` and `.input=payload` instead of a text block; replaced `test_strips_markdown_fences` and `test_raises_on_non_json` (scenarios no longer possible) with `test_raises_on_missing_tool_use_block`; removed unused `import json`; 235 tests passing
+
 ## Bugfix — 2026-04-06 (fractional trading + dotenv)
 
 ### Fixed

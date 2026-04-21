@@ -5,9 +5,12 @@ Runs the real LLM council against historical data for each trading day in the
 requested window, producing a signals DataFrame ready for portfolio simulation.
 """
 
+import csv
+import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pandas as pd
 
@@ -82,6 +85,12 @@ class _PortfolioTracker:
 # ---------------------------------------------------------- Signal generation
 
 
+def _append_agent_log(path: Path, date: str, data: dict) -> None:
+    """Append one JSON-lines entry to an agent log file, flushing immediately."""
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"date": date, "output": data}) + "\n")
+
+
 async def generate_signals(
     full_ohlcv: pd.DataFrame,
     sentiment_history: dict,
@@ -89,6 +98,8 @@ async def generate_signals(
     end_date: datetime,
     initial_capital: float = 10_000.0,
     client=None,
+    csv_path: Path | None = None,
+    agent_log_dir: Path | None = None,
 ) -> pd.DataFrame:
     """Run the LLM council for each trading day and return a signals DataFrame.
 
@@ -125,89 +136,119 @@ async def generate_signals(
     if end.tzinfo is None:
         end = end.replace(tzinfo=timezone.utc)
 
-    while current < end:
-        date_str = current.strftime("%Y-%m-%d")
-        try:
-            # 1. Slice OHLCV — strict no-lookahead
-            ohlcv_slice = slice_ohlcv(full_ohlcv, as_of=current)
+    _csv_file = None
+    _csv_writer = None
+    if csv_path is not None:
+        _csv_file = open(csv_path, "w", newline="", encoding="utf-8")  # noqa: SIM115
+        _csv_writer = csv.writer(_csv_file)
+        _csv_writer.writerow(["date"] + SIGNAL_COLUMNS)
+        _csv_file.flush()
 
-            # 2. Get sentiment for this date
-            sentiment = get_sentiment_for_date(sentiment_history, current)
+    try:
+        while current < end:
+            date_str = current.strftime("%Y-%m-%d")
+            try:
+                # 1. Slice OHLCV — strict no-lookahead
+                ohlcv_slice = slice_ohlcv(full_ohlcv, as_of=current)
 
-            # 3. Build price and indicator data from the slice
-            price_data = build_price_data(ohlcv_slice)
-            indicator_data = compute_indicators(ohlcv_slice)
+                # 2. Get sentiment for this date
+                sentiment = get_sentiment_for_date(sentiment_history, current)
 
-            # The last row of the slice is the "today" candle the agents see
-            today_row = ohlcv_slice.iloc[-1]
+                # 3. Build price and indicator data from the slice
+                price_data = build_price_data(ohlcv_slice)
+                indicator_data = compute_indicators(ohlcv_slice)
 
-            # 4. Assemble context — inject all historical data, skip live fetches
-            ctx = await assemble_context(
-                exchange=None,
-                portfolio=tracker.to_dict(),
-                timestamp=current,
-                news_override=NEUTRAL_NEWS_STUB,
-                sentiment_override=sentiment,
-                onchain_override=NEUTRAL_ONCHAIN_STUB,
-                skip_freshness=True,
-            )
+                # The last row of the slice is the "today" candle the agents see
+                today_row = ohlcv_slice.iloc[-1]
 
-            # 5. Run council
-            result = await run_council(ctx, client=client)
+                # 4. Assemble context — inject all historical data, skip live fetches
+                ctx = await assemble_context(
+                    exchange=None,
+                    portfolio=tracker.to_dict(),
+                    timestamp=current,
+                    news_override=NEUTRAL_NEWS_STUB,
+                    sentiment_override=sentiment,
+                    onchain_override=NEUTRAL_ONCHAIN_STUB,
+                    skip_freshness=True,
+                )
 
-            signal = result.signal
-            conviction = result.deliberation.conviction
-            vetoed = result.vetoed
-            size_pct = result.outputs.risk.approved_position_size_pct
-            close_price = float(ohlcv_slice.iloc[-1]["close"])
-            sl_price = result.outputs.risk.recommended_stop_loss
-            tp_price = result.outputs.risk.recommended_take_profit
-            # Store as ratios relative to close so they work at any price scale
-            sl_pct = (sl_price / close_price) if close_price > 0 and sl_price > 0 else 0.0
-            tp_pct = (tp_price / close_price) if close_price > 0 and tp_price > 0 else 0.0
+                # 5. Run council
+                result = await run_council(ctx, client=client)
 
-            logger.info(
-                "Cycle %s: signal=%s conviction=%s vetoed=%s",
-                date_str, signal, conviction, vetoed,
-            )
+                signal = result.signal
+                conviction = result.deliberation.conviction
+                vetoed = result.vetoed
+                size_pct = result.outputs.risk.approved_position_size_pct
+                close_price = float(ohlcv_slice.iloc[-1]["close"])
+                sl_price = result.outputs.risk.recommended_stop_loss
+                tp_price = result.outputs.risk.recommended_take_profit
+                # Store as ratios relative to close so they work at any price scale
+                sl_pct = (sl_price / close_price) if close_price > 0 and sl_price > 0 else 0.0
+                tp_pct = (tp_price / close_price) if close_price > 0 and tp_price > 0 else 0.0
 
-        except (AgentError, ValueError) as exc:
-            logger.warning("Cycle %s failed (%s: %s); recording HOLD.", date_str, type(exc).__name__, exc)
-            signal = "HOLD"
-            conviction = "low"
-            vetoed = False
-            size_pct = 0.0
-            sl_pct = 0.0
-            tp_pct = 0.0
-            today_row = _get_today_row(full_ohlcv, current)
+                logger.info(
+                    "Cycle %s: signal=%s conviction=%s vetoed=%s",
+                    date_str, signal, conviction, vetoed,
+                )
 
-        # 6. Record row
-        rows.append({
-            "date": current,
-            "open": float(today_row["open"]) if today_row is not None else 0.0,
-            "high": float(today_row["high"]) if today_row is not None else 0.0,
-            "low": float(today_row["low"]) if today_row is not None else 0.0,
-            "close": float(today_row["close"]) if today_row is not None else 0.0,
-            "volume": float(today_row["volume"]) if today_row is not None else 0.0,
-            "signal": signal,
-            "size_pct": size_pct,
-            "sl_pct": sl_pct,
-            "tp_pct": tp_pct,
-            "conviction": conviction,
-            "vetoed": vetoed,
-        })
+                if agent_log_dir is not None:
+                    agent_log_dir.mkdir(parents=True, exist_ok=True)
+                    _append_agent_log(agent_log_dir / "technical_analyst.json", date_str, result.outputs.technical.model_dump())
+                    _append_agent_log(agent_log_dir / "sentiment_analyst.json", date_str, result.outputs.sentiment.model_dump())
+                    _append_agent_log(agent_log_dir / "fundamental_analyst.json", date_str, result.outputs.fundamental.model_dump())
+                    _append_agent_log(agent_log_dir / "risk_manager.json", date_str, result.outputs.risk.model_dump())
+                    _append_agent_log(agent_log_dir / "deliberation.json", date_str, result.deliberation.model_dump())
 
-        # 7. Update tracker (simplified: mark position open/close by signal)
-        close_price = float(today_row["close"]) if today_row is not None else 0.0
-        if signal == "BUY" and tracker.position_usd == 0.0 and size_pct > 0:
-            size_usd = tracker.cash * (size_pct / 100)
-            tracker.open_position(size_usd)
-        elif signal == "SELL" and tracker.position_usd > 0:
-            # Approximate PnL: we don't track entry price here — that's
-            # backtesting.py's job. Just close the tracked position at par.
-            tracker.close_position(pnl_usd=0.0)
+            except (AgentError, ValueError) as exc:
+                logger.warning("Cycle %s failed (%s: %s); recording HOLD.", date_str, type(exc).__name__, exc)
+                signal = "HOLD"
+                conviction = "low"
+                vetoed = False
+                size_pct = 0.0
+                sl_pct = 0.0
+                tp_pct = 0.0
+                today_row = _get_today_row(full_ohlcv, current)
 
-        current += timedelta(days=1)
+            # 6. Record row
+            row = {
+                "date": current,
+                "open": float(today_row["open"]) if today_row is not None else 0.0,
+                "high": float(today_row["high"]) if today_row is not None else 0.0,
+                "low": float(today_row["low"]) if today_row is not None else 0.0,
+                "close": float(today_row["close"]) if today_row is not None else 0.0,
+                "volume": float(today_row["volume"]) if today_row is not None else 0.0,
+                "signal": signal,
+                "size_pct": size_pct,
+                "sl_pct": sl_pct,
+                "tp_pct": tp_pct,
+                "conviction": conviction,
+                "vetoed": vetoed,
+            }
+            rows.append(row)
+
+            if _csv_writer is not None:
+                _csv_writer.writerow([
+                    current.strftime("%Y-%m-%d"),
+                    row["open"], row["high"], row["low"], row["close"], row["volume"],
+                    row["signal"], row["size_pct"], row["sl_pct"], row["tp_pct"],
+                    row["conviction"], row["vetoed"],
+                ])
+                _csv_file.flush()
+
+            # 7. Update tracker (simplified: mark position open/close by signal)
+            close_price = float(today_row["close"]) if today_row is not None else 0.0
+            if signal == "BUY" and tracker.position_usd == 0.0 and size_pct > 0:
+                size_usd = tracker.cash * (size_pct / 100)
+                tracker.open_position(size_usd)
+            elif signal == "SELL" and tracker.position_usd > 0:
+                # Approximate PnL: we don't track entry price here — that's
+                # backtesting.py's job. Just close the tracked position at par.
+                tracker.close_position(pnl_usd=0.0)
+
+            current += timedelta(days=1)
+    finally:
+        if _csv_file is not None:
+            _csv_file.close()
 
     if not rows:
         return pd.DataFrame(columns=["date"] + SIGNAL_COLUMNS).set_index("date")
