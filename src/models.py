@@ -62,6 +62,16 @@ class OnchainData(BaseModel):
     sopr: float
 
 
+class MacroData(BaseModel):
+    """Macro context (v2). DXY, VIX, SPX 20-session change, 10Y yield, and
+    a derived risk regime classifier."""
+    vix: float
+    dxy: float
+    spx_20d_change_pct: float
+    tnx_yield_pct: float          # ^TNX divided by 10 (e.g. 3.97, not 39.7)
+    macro_bias: MacroBias
+
+
 class PortfolioData(BaseModel):
     btc_position_usd: float
     cash_usd: float
@@ -78,6 +88,9 @@ class MarketContext(BaseModel):
     sentiment: SentimentData
     onchain: OnchainData
     portfolio: PortfolioData
+    # v2 additive: macro context. None in live mode until fetcher wired;
+    # populated by the backtest loop via src.data.macro.fetch_macro_for_date.
+    macro: MacroData | None = None
 
 
 # -------------------------------------------------------- Agent output models
@@ -146,3 +159,6 @@ class DeliberationOutput(BaseModel):
     consensus_summary: str
     key_disagreements: list[str]
     agent_weights_applied: AgentWeights
+    # Signed score in [-1, 1] from compute_signed_score. 0.0 when risk-vetoed
+    # or when this output was constructed without running the scorer.
+    score: float = 0.0

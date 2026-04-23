@@ -1,5 +1,29 @@
 # Changelog
 
+## Feature — 2026-04-22 (v2: restore agent sight + replace rigid consensus)
+
+Implements `specs/v2.md` phases 1–4. Phase 5 (tuning + holdout backtest) is pending real API runs. Test suite: **235 → 283** passing.
+
+### Added
+- `src/data/news_historical.py` — `fetch_news_for_date(as_of)`: GDELT DOC 2.0 `artlist` query filtered to a source allowlist (Reuters, Bloomberg, CoinDesk, WSJ, FT, CoinTelegraph, Forbes, CNBC, The Block, Decrypt); strict `as_of - 24h` publish-lag cutoff; disk cache at `tmp/cache/gdelt/YYYY-MM-DD.json`; returns `[]` on HTTP error so the caller can fall back to the stub
+- `src/data/onchain_historical.py` — `fetch_onchain_for_date(as_of)`: CoinMetrics Community API (`community-api.coinmetrics.io/v4/timeseries/asset-metrics`); preserves existing `OnchainData` field names but fills them with documented proxies — MVRV (CapMrktCurUSD / CapRealUSD) as `sopr`, 7-day transfer-volume momentum as `exchange_net_flow_btc`, active-address count / 1000 as `whale_transactions_24h`; slices strictly `date < as_of.date()`; disk cache at `tmp/cache/coinmetrics/`
+- `src/data/macro.py` — `fetch_macro_for_date(as_of)`: yfinance bundle for `DX-Y.NYB`, `^VIX`, `^GSPC`, `^TNX` (divides by 10 to correct the yfinance ×10 quote); computes `macro_bias` from VIX band, DXY 20-session trend, and SPX 20-session trend; falls back to `macro_bias=neutral` on any empty frame
+- `src/models.py` — new `MacroData` model (vix, dxy, spx_20d_change_pct, tnx_yield_pct, macro_bias); new optional `macro: MacroData | None = None` field on `MarketContext`; new `score: float = 0.0` field on `DeliberationOutput`
+- `src/agents/scoring.py` — `compute_signed_score(outputs)`: confidence-weighted signed-score over the three directional agents (weights 0.40 tech / 0.25 sentiment / 0.35 fundamental); confidence floor 30 (agents below abstain rather than dilute); threshold 0.25 to trade; risk-veto overrides unconditionally. `score_to_position_size_pct(score)` derives size from `|score|`, capped at 20%
+- `prompts/technical_analyst_v2.txt`, `sentiment_analyst_v2.txt`, `fundamental_analyst_v2.txt`, `deliberation_v2.txt` — v1 prompts retained in-tree; v2 prompts instruct directional agents to use the full 0–100 confidence range and be more assertive in clear regimes; deliberation rewritten to produce narrative only (scoring happens in Python); fundamental prompt documents the MVRV-as-SOPR proxy so the agent reasons about it correctly
+- `tests/test_news_historical.py`, `tests/test_onchain_historical.py`, `tests/test_macro.py` — full coverage with mocked HTTP and yfinance; tests lookahead boundaries, cache round-trips, fallback paths
+- `tests/test_agents.py` — `TestComputeSignedScore` (8 cases: all-BUY / all-SELL / veto override / all-HOLD / confidence floor / split directions / sub-threshold / all-abstain) and `TestScoreToPositionSize` (4 cases); new `test_scored_signal_overrides_llm_deliberation` verifying the runner discards the LLM's `final_signal` and substitutes the deterministic score
+
+### Changed
+- `src/validation.py` — `validate_news_count` and `validate_context` take `min_news_items: int = 10`; backtest callers pass 5 (GDELT allowlist can be thin on some dates)
+- `src/data/assembler.py` — new `macro_override: MacroData | None` parameter; new `min_news_items: int = 10` parameter plumbed through to `validate_context`
+- `src/agents/deliberation.py` — `PROMPT_FILE` flipped to `deliberation_v2.txt`
+- `src/agents/technical.py`, `sentiment.py`, `fundamental.py` — `PROMPT_FILE` flipped to `_v2.txt` variants
+- `src/agents/fundamental.py` — user-message builder now includes a `Macro backdrop:` block when `ctx.macro` is populated; on-chain field labels re-worded to match the v2 proxy semantics
+- `src/agents/runner.py` — imports `compute_signed_score`; after deliberation, calls `llm_deliberation.model_copy(update={"final_signal": scored_signal, "score": score})` so the deterministic scorer owns the final signal while the LLM still supplies narrative; risk-veto short-circuit preserved (skips the deliberation LLM call entirely)
+- `src/backtest/signals.py` — replaces `NEUTRAL_NEWS_STUB` with `fetch_news_for_date` (stub fallback when < 5 items); replaces `NEUTRAL_ONCHAIN_STUB` with `fetch_onchain_for_date`; threads `fetch_macro_for_date` into `macro_override`; sizes positions via `min(score_to_position_size_pct(score), risk.approved_position_size_pct)`; `SIGNAL_COLUMNS` gains a `score` column (surfaced in the CSV and the DataFrame)
+- `README.md` — new v2 phase table; lists each module created
+
 ## Update — 2026-04-20 (per-cycle agent response logs)
 
 ### Added

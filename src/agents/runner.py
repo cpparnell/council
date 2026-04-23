@@ -15,6 +15,7 @@ from src.agents.base import AgentError
 from src.agents.deliberation import run_deliberation
 from src.agents.fundamental import run_fundamental_analyst
 from src.agents.risk import run_risk_manager
+from src.agents.scoring import compute_signed_score
 from src.agents.sentiment import run_sentiment_analyst
 from src.agents.technical import run_technical_analyst
 from src.models import CouncilOutputs, DeliberationOutput, MarketContext
@@ -79,10 +80,13 @@ async def run_council(
         risk=risk,
     )
 
-    # If the risk manager has vetoed, skip deliberation and return HOLD immediately.
-    # This mirrors the spec: risk veto overrides everything.
+    scored_signal, score = compute_signed_score(outputs)
+
+    # If the risk manager has vetoed, skip deliberation entirely and return HOLD.
+    # compute_signed_score already returns ("HOLD", 0.0) in this case; we also
+    # short-circuit the deliberation LLM call to save tokens.
     if risk.veto:
-        from src.models import AgentWeights, DeliberationOutput
+        from src.models import AgentWeights
 
         deliberation = DeliberationOutput(
             final_signal="HOLD",
@@ -92,8 +96,14 @@ async def run_council(
             agent_weights_applied=AgentWeights(
                 technical=0.0, sentiment=0.0, fundamental=0.0, risk=1.0
             ),
+            score=0.0,
         )
         return CouncilResult(outputs=outputs, deliberation=deliberation)
 
-    deliberation = await run_deliberation(outputs, client)
+    # Deliberation LLM supplies narrative (summary, disagreements, weights).
+    # The deterministic scorer overrides final_signal and attaches the score.
+    llm_deliberation = await run_deliberation(outputs, client)
+    deliberation = llm_deliberation.model_copy(
+        update={"final_signal": scored_signal, "score": score}
+    )
     return CouncilResult(outputs=outputs, deliberation=deliberation)

@@ -16,22 +16,28 @@ import pandas as pd
 
 from src.agents.base import AgentError
 from src.agents.runner import run_council
+from src.agents.scoring import score_to_position_size_pct
 from src.backtest.data import (
     NEUTRAL_NEWS_STUB,
-    NEUTRAL_ONCHAIN_STUB,
     get_sentiment_for_date,
     slice_ohlcv,
 )
 from src.data.assembler import assemble_context
 from src.data.indicators import compute_indicators
+from src.data.macro import fetch_macro_for_date
+from src.data.news_historical import fetch_news_for_date
+from src.data.onchain_historical import fetch_onchain_for_date
 from src.data.price import build_price_data
+
+# GDELT coverage can be thin on some dates; fall back to the stub below this count.
+_NEWS_MIN_ITEMS = 5
 
 logger = logging.getLogger(__name__)
 
 # Required columns in the output DataFrame
 SIGNAL_COLUMNS = [
     "open", "high", "low", "close", "volume",
-    "signal", "size_pct", "sl_pct", "tp_pct", "conviction", "vetoed",
+    "signal", "size_pct", "sl_pct", "tp_pct", "conviction", "vetoed", "score",
 ]
 
 
@@ -154,6 +160,17 @@ async def generate_signals(
                 # 2. Get sentiment for this date
                 sentiment = get_sentiment_for_date(sentiment_history, current)
 
+                # 2b. Fetch historical news (GDELT), fall back to stub if empty
+                news_items = fetch_news_for_date(current)
+                if len(news_items) < _NEWS_MIN_ITEMS:
+                    news_items = NEUTRAL_NEWS_STUB
+
+                # 2c. Fetch historical on-chain (CoinMetrics Community, proxies)
+                onchain_data = fetch_onchain_for_date(current)
+
+                # 2d. Fetch macro snapshot (yfinance DXY/VIX/SPX/TNX)
+                macro_data = fetch_macro_for_date(current)
+
                 # 3. Build price and indicator data from the slice
                 price_data = build_price_data(ohlcv_slice)
                 indicator_data = compute_indicators(ohlcv_slice)
@@ -166,10 +183,12 @@ async def generate_signals(
                     exchange=None,
                     portfolio=tracker.to_dict(),
                     timestamp=current,
-                    news_override=NEUTRAL_NEWS_STUB,
+                    news_override=news_items,
                     sentiment_override=sentiment,
-                    onchain_override=NEUTRAL_ONCHAIN_STUB,
+                    onchain_override=onchain_data,
+                    macro_override=macro_data,
                     skip_freshness=True,
+                    min_news_items=_NEWS_MIN_ITEMS,
                 )
 
                 # 5. Run council
@@ -178,7 +197,10 @@ async def generate_signals(
                 signal = result.signal
                 conviction = result.deliberation.conviction
                 vetoed = result.vetoed
-                size_pct = result.outputs.risk.approved_position_size_pct
+                # v2 position size = score-derived sizing, capped by risk manager's
+                # portfolio-risk approval. Risk veto is already reflected in signal=HOLD.
+                score_size = score_to_position_size_pct(result.deliberation.score)
+                size_pct = min(score_size, result.outputs.risk.approved_position_size_pct)
                 close_price = float(ohlcv_slice.iloc[-1]["close"])
                 sl_price = result.outputs.risk.recommended_stop_loss
                 tp_price = result.outputs.risk.recommended_take_profit
@@ -199,6 +221,8 @@ async def generate_signals(
                     _append_agent_log(agent_log_dir / "risk_manager.json", date_str, result.outputs.risk.model_dump())
                     _append_agent_log(agent_log_dir / "deliberation.json", date_str, result.deliberation.model_dump())
 
+                score = result.deliberation.score
+
             except (AgentError, ValueError) as exc:
                 logger.warning("Cycle %s failed (%s: %s); recording HOLD.", date_str, type(exc).__name__, exc)
                 signal = "HOLD"
@@ -207,6 +231,7 @@ async def generate_signals(
                 size_pct = 0.0
                 sl_pct = 0.0
                 tp_pct = 0.0
+                score = 0.0
                 today_row = _get_today_row(full_ohlcv, current)
 
             # 6. Record row
@@ -223,6 +248,7 @@ async def generate_signals(
                 "tp_pct": tp_pct,
                 "conviction": conviction,
                 "vetoed": vetoed,
+                "score": score,
             }
             rows.append(row)
 
@@ -231,7 +257,7 @@ async def generate_signals(
                     current.strftime("%Y-%m-%d"),
                     row["open"], row["high"], row["low"], row["close"], row["volume"],
                     row["signal"], row["size_pct"], row["sl_pct"], row["tp_pct"],
-                    row["conviction"], row["vetoed"],
+                    row["conviction"], row["vetoed"], row["score"],
                 ])
                 _csv_file.flush()
 

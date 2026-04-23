@@ -56,7 +56,11 @@ def validate_price_freshness(ctx: MarketContext, max_age_minutes: int = 5) -> No
 
 
 def validate_news_count(ctx: MarketContext, min_items: int = 10) -> None:
-    """Reject the cycle if fewer than *min_items* news articles were retrieved."""
+    """Reject the cycle if fewer than *min_items* news articles were retrieved.
+
+    Backtest callers pass a lower floor (5) because the GDELT allowlist can be
+    thin on some historical dates. Live callers keep the default of 10.
+    """
     if len(ctx.news) < min_items:
         raise ValidationError(
             f"Insufficient news: {len(ctx.news)} items retrieved, need ≥ {min_items}"
@@ -126,7 +130,11 @@ def check_volatility_halt(ctx: MarketContext) -> None:
         )
 
 
-def validate_context(ctx: MarketContext, skip_freshness: bool = False) -> None:
+def validate_context(
+    ctx: MarketContext,
+    skip_freshness: bool = False,
+    min_news_items: int = 10,
+) -> None:
     """Run all Tier-0 checks in order.
 
     Call this once after assembling the context and before invoking any agent.
@@ -137,10 +145,13 @@ def validate_context(ctx: MarketContext, skip_freshness: bool = False) -> None:
         skip_freshness: When True, the price-freshness check is skipped.
                         Pass True for historical backtest contexts whose
                         timestamps are intentionally in the past.
+        min_news_items: Minimum news count required. Live mode uses 10;
+                        backtest mode uses 5 (GDELT historical coverage
+                        can be thinner than live CryptoPanic).
     """
     if not skip_freshness:
         validate_price_freshness(ctx)
-    validate_news_count(ctx)
+    validate_news_count(ctx, min_items=min_news_items)
     validate_numeric_fields(ctx)
     check_drawdown_halt(ctx)
     check_volatility_halt(ctx)

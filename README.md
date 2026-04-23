@@ -127,6 +127,14 @@ pytest tests/test_agents.py::test_run_council_hold_on_veto -v  # single test
 - **Phase 5** ✅ Exchange migration: Binance → Kraken
 - **Phase 6** ✅ Historical data source: Kraken OHLCV → Yahoo Finance (yfinance; unlimited history)
 
+### v2 — Agent Enhancement (spec/v2.md)
+- **Phase 1** ✅ Historical news via GDELT DOC 2.0 (`src/data/news_historical.py`) — replaces NEUTRAL_NEWS_STUB with real dated headlines filtered to an allowlist (Reuters / Bloomberg / CoinDesk / WSJ / FT / CoinTelegraph / etc.), 24h publish-lag cutoff, disk-cached under `tmp/cache/gdelt/`
+- **Phase 2** ✅ Historical on-chain via CoinMetrics Community (`src/data/onchain_historical.py`) — replaces NEUTRAL_ONCHAIN_STUB with MVRV (as SOPR proxy), transfer-volume trend (as net-flow proxy), and activity-intensity (as whale proxy)
+- **Phase 2.5** ✅ Decision-logic rework (`src/agents/scoring.py`) — replaces v1's hard 60/70 thresholds with a confidence-weighted signed-score; deliberation LLM writes narrative, Python computes the final signal deterministically; risk-veto still overrides
+- **Phase 3** ✅ Macro context via yfinance (`src/data/macro.py`) — DXY / VIX / SPX / ^TNX bundle with derived risk-on / risk-off / neutral classifier, wired through the fundamental agent
+- **Phase 4** ✅ v2 prompts (`prompts/*_v2.txt`) — directional agents retuned to use the full 0–100 confidence range and be more assertive in clear regimes; deliberation refocused on narrative; v1 prompts kept in-tree for reproducibility
+- **Phase 5** Pending — tuning sweep on 2022 window, holdout backtest Jan–Aug 2023
+
 ## Success Targets (Phase 5 evaluation)
 
 | Metric | Target |

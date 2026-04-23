@@ -24,6 +24,7 @@ from src.data.price import build_price_data, fetch_ohlcv, get_exchange
 from src.data.sentiment import fetch_sentiment
 from src.models import (
     IndicatorData,
+    MacroData,
     MarketContext,
     NewsItem,
     OnchainData,
@@ -41,7 +42,9 @@ async def assemble_context(
     news_override: list[dict] | None = None,
     sentiment_override: dict | None = None,
     onchain_override: dict | None = None,
+    macro_override: MacroData | None = None,
     skip_freshness: bool = False,
+    min_news_items: int = 10,
 ) -> MarketContext:
     """Assemble the full context object for one council cycle.
 
@@ -107,7 +110,8 @@ async def assemble_context(
         sentiment=SentimentData(**sentiment_raw),
         onchain=OnchainData(**onchain_raw),
         portfolio=PortfolioData(**portfolio),
+        macro=macro_override,
     )
 
-    validate_context(ctx, skip_freshness=skip_freshness)
+    validate_context(ctx, skip_freshness=skip_freshness, min_news_items=min_news_items)
     return ctx
