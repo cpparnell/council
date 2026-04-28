@@ -497,3 +497,101 @@ class TestRunBacktest:
 # ================================================================ imports needed in tests
 
 import asyncio  # noqa: E402  (used in test_returns_dict_with_required_keys)
+
+
+# ================================================================ TestSanitizeStopLevels
+
+class TestSanitizeStopLevels:
+    """Tests for src/backtest/signals._sanitize_stop_levels.
+
+    This function guards against the risk manager outputting stop-loss prices
+    that are above the entry price (sl_pct ≥ 1.0) or take-profit prices that
+    are below the entry price (tp_pct ≤ 1.0) — both of which were observed in
+    production runs when the model anchored to historical Bitcoin ATH levels
+    rather than computing downward from the current price.
+    """
+
+    def _call(self, close, sl_pct, tp_pct, atr_14):
+        from src.backtest.signals import _sanitize_stop_levels
+        return _sanitize_stop_levels(close, sl_pct, tp_pct, atr_14)
+
+    # --- stop-loss above entry (the observed bug) ---
+
+    def test_sl_above_entry_is_replaced(self):
+        """sl_pct = 3.17 (stop at 3× entry) must be corrected."""
+        sl, tp = self._call(close=23_389, sl_pct=3.17, tp_pct=3.57, atr_14=1_500)
+        assert sl < 1.0, f"sl_pct {sl:.4f} is still ≥ 1.0"
+
+    def test_sl_above_entry_uses_atr_fallback(self):
+        close, atr = 23_389.0, 1_500.0
+        sl, _ = self._call(close=close, sl_pct=3.17, tp_pct=3.57, atr_14=atr)
+        expected = (close - 2.0 * atr) / close   # 2×ATR stop
+        assert sl == pytest.approx(expected, rel=1e-6)
+
+    def test_sl_at_exactly_one_is_replaced(self):
+        sl, _ = self._call(close=20_000, sl_pct=1.0, tp_pct=1.10, atr_14=1_000)
+        assert sl < 1.0
+
+    def test_sl_zero_is_replaced(self):
+        sl, _ = self._call(close=20_000, sl_pct=0.0, tp_pct=1.10, atr_14=1_000)
+        assert 0.0 < sl < 1.0
+
+    def test_sl_negative_is_replaced(self):
+        sl, _ = self._call(close=20_000, sl_pct=-0.5, tp_pct=1.10, atr_14=1_000)
+        assert 0.0 < sl < 1.0
+
+    # --- stop-loss floor ---
+
+    def test_sl_never_drops_below_80pct_of_entry(self):
+        """A huge ATR should not produce a stop more than 20% below entry."""
+        # ATR of 100k would push stop to 20_000 - 200_000 = negative → clamp to MIN_SL_PCT
+        sl, _ = self._call(close=20_000, sl_pct=3.0, tp_pct=1.10, atr_14=100_000)
+        assert sl >= 0.80
+
+    # --- valid stop passes through unchanged ---
+
+    def test_valid_sl_is_unchanged(self):
+        sl, _ = self._call(close=23_389, sl_pct=0.90, tp_pct=1.10, atr_14=1_500)
+        assert sl == pytest.approx(0.90)
+
+    def test_valid_tp_is_unchanged(self):
+        _, tp = self._call(close=23_389, sl_pct=0.90, tp_pct=1.15, atr_14=1_500)
+        assert tp == pytest.approx(1.15)
+
+    # --- take-profit below entry ---
+
+    def test_tp_below_entry_is_replaced(self):
+        """tp_pct = 0.85 (target below entry) must be corrected."""
+        _, tp = self._call(close=23_389, sl_pct=0.90, tp_pct=0.85, atr_14=1_500)
+        assert tp > 1.0
+
+    def test_tp_at_exactly_one_is_replaced(self):
+        _, tp = self._call(close=23_389, sl_pct=0.90, tp_pct=1.0, atr_14=1_500)
+        assert tp > 1.0
+
+    def test_tp_uses_atr_fallback(self):
+        close, atr = 23_389.0, 1_500.0
+        _, tp = self._call(close=close, sl_pct=0.90, tp_pct=0.80, atr_14=atr)
+        expected = (close + 3.0 * atr) / close  # 3×ATR target
+        assert tp == pytest.approx(expected, rel=1e-6)
+
+    # --- R:R check after sanitization ---
+
+    def test_corrected_levels_have_positive_rr(self):
+        close, atr = 23_389.0, 1_500.0
+        sl, tp = self._call(close=close, sl_pct=3.17, tp_pct=3.57, atr_14=atr)
+        # R:R = (tp - 1) / (1 - sl) measured in pct terms
+        rr = (tp - 1.0) / (1.0 - sl)
+        assert rr >= 1.5, f"R:R {rr:.2f} below minimum after sanitization"
+
+    # --- last-resort fallbacks when no ATR available ---
+
+    def test_zero_atr_uses_pct_defaults(self):
+        sl, tp = self._call(close=23_389, sl_pct=3.0, tp_pct=0.5, atr_14=0.0)
+        assert 0.0 < sl < 1.0
+        assert tp > 1.0
+
+    def test_zero_close_returns_defaults_without_raising(self):
+        sl, tp = self._call(close=0.0, sl_pct=0.0, tp_pct=0.0, atr_14=1_500)
+        assert 0.0 < sl < 1.0
+        assert tp > 1.0

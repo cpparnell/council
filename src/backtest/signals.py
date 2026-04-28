@@ -97,6 +97,56 @@ def _append_agent_log(path: Path, date: str, data: dict) -> None:
         f.write(json.dumps({"date": date, "output": data}) + "\n")
 
 
+def _sanitize_stop_levels(
+    close_price: float,
+    sl_pct: float,
+    tp_pct: float,
+    atr_14: float,
+) -> tuple[float, float]:
+    """Validate and correct stop-loss / take-profit ratios for a long position.
+
+    For a long entry at *close_price*:
+      - sl_pct must be in (0.0, 1.0): stop is below entry price.
+      - tp_pct must be > 1.0:         target is above entry price.
+
+    When the risk manager returns a stop above the entry (sl_pct ≥ 1.0) —
+    which happens when the model anchors to historical BTC price levels rather
+    than computing downward from the current price — the ratio is replaced with
+    an ATR-based fallback.  The same fallback fires when values are zero or
+    nonsensical.
+
+    Args:
+        close_price: Current close price (the implied entry for a long).
+        sl_pct:      raw recommended_stop_loss / close_price from risk manager.
+        tp_pct:      raw recommended_take_profit / close_price from risk manager.
+        atr_14:      ATR-14 value from indicators (used for the fallback).
+
+    Returns:
+        Corrected (sl_pct, tp_pct) — guaranteed sl_pct ∈ (0, 1) and tp_pct > 1.
+    """
+    _SL_ATR_MULT = 2.0     # fallback: stop 2×ATR below entry
+    _TP_ATR_MULT = 3.0     # fallback: target 3×ATR above entry (1.5 R:R on the stop)
+    _MIN_SL_PCT = 0.80     # widest allowed stop: 20% below entry
+
+    # --- stop loss ---
+    if sl_pct <= 0.0 or sl_pct >= 1.0:
+        if close_price > 0 and atr_14 > 0:
+            fallback_sl = close_price - _SL_ATR_MULT * atr_14
+            sl_pct = max(_MIN_SL_PCT, fallback_sl / close_price)
+        else:
+            sl_pct = 0.95  # 5% stop as last resort
+
+    # --- take profit ---
+    if tp_pct <= 1.0:
+        if close_price > 0 and atr_14 > 0:
+            fallback_tp = close_price + _TP_ATR_MULT * atr_14
+            tp_pct = fallback_tp / close_price
+        else:
+            tp_pct = 1.075  # 7.5% target (1.5× a 5% stop)
+
+    return sl_pct, tp_pct
+
+
 async def generate_signals(
     full_ohlcv: pd.DataFrame,
     sentiment_history: dict,
@@ -207,6 +257,11 @@ async def generate_signals(
                 # Store as ratios relative to close so they work at any price scale
                 sl_pct = (sl_price / close_price) if close_price > 0 and sl_price > 0 else 0.0
                 tp_pct = (tp_price / close_price) if close_price > 0 and tp_price > 0 else 0.0
+                # Sanity-check: stop must be below entry (sl_pct < 1) and
+                # target must be above entry (tp_pct > 1) for a long position.
+                sl_pct, tp_pct = _sanitize_stop_levels(
+                    close_price, sl_pct, tp_pct, indicator_data["atr_14"]
+                )
 
                 logger.info(
                     "Cycle %s: signal=%s conviction=%s vetoed=%s",

@@ -47,8 +47,10 @@ GDELT_ALLOWLIST = frozenset({
 
 CACHE_DIR = Path("tmp/cache/gdelt")
 
-# Seconds to sleep after each uncached fetch (rate control)
-_POST_FETCH_SLEEP = 2.0
+# Seconds to sleep before each GDELT request (proactive rate control)
+_PRE_REQUEST_SLEEP = 2.0
+# Additional seconds to sleep after each uncached fetch
+_POST_FETCH_SLEEP = 1.0
 # Max retry attempts on 429
 _MAX_RETRIES = 3
 
@@ -66,18 +68,23 @@ def _extract_domain(url: str) -> str:
 
 
 def _gdelt_get(params: dict) -> dict | None:
-    """GET GDELT with exponential-backoff retry on 429. Returns parsed JSON or None."""
-    delay = 5.0
+    """GET GDELT with proactive rate pacing and exponential-backoff retry on 429.
+
+    Sleeps _PRE_REQUEST_SLEEP seconds before every attempt so that the request
+    rate is controlled from the very first call rather than only after a 429.
+    """
+    retry_delay = 10.0
     for attempt in range(_MAX_RETRIES):
+        time.sleep(_PRE_REQUEST_SLEEP)
         try:
             resp = httpx.get(GDELT_URL, params=params, timeout=30)
             if resp.status_code == 429:
                 logger.warning(
                     "GDELT rate-limited (attempt %d/%d); sleeping %.0fs",
-                    attempt + 1, _MAX_RETRIES, delay,
+                    attempt + 1, _MAX_RETRIES, retry_delay,
                 )
-                time.sleep(delay)
-                delay *= 3
+                time.sleep(retry_delay)
+                retry_delay *= 3
                 continue
             resp.raise_for_status()
             return resp.json()

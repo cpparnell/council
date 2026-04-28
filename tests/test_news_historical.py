@@ -1,7 +1,7 @@
 """
 Unit tests for src/data/news_historical.py (GDELT historical news).
 
-All HTTP calls are mocked — no network required.
+All HTTP calls and time.sleep calls are mocked — no network, no real delays.
 """
 
 import json
@@ -17,6 +17,15 @@ from src.data.news_historical import (
     _extract_domain,
     fetch_news_for_date,
 )
+
+# Suppress all sleeps in every test in this module
+pytestmark = pytest.mark.usefixtures("_no_sleep")
+
+
+@pytest.fixture(autouse=True)
+def _no_sleep():
+    with patch("src.data.news_historical.time.sleep"):
+        yield
 
 
 def _mock_response(articles: list[dict]) -> MagicMock:

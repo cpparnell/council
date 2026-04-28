@@ -656,6 +656,7 @@ _V2_PROMPTS = [
     "technical_analyst_v2.txt",
     "sentiment_analyst_v2.txt",
     "fundamental_analyst_v2.txt",
+    "risk_manager_v2.txt",
     "deliberation_v2.txt",
 ]
 

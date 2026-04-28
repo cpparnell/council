@@ -1,5 +1,15 @@
 # Changelog
 
+## Bugfix — 2026-04-27 (risk manager stop-loss above entry price)
+
+### Fixed
+- `prompts/risk_manager_v2.txt` — rewritten to prevent the model from anchoring `recommended_stop_loss` to historical BTC ATH levels (~$70–74k) instead of computing downward from the current price. Key changes: explicitly states the system is long-only (removed the "above entry for SELL" clause that confused the model); requires `recommended_stop_loss MUST be LESS THAN the current price`; provides the placement formula as a concrete equation (`stop = current_price − multiplier × ATR-14`); adds a worked example with actual numbers ($23k BTC / $1,500 ATR-14); adds "DO NOT use historical ATH prices as reference points"
+- `src/agents/risk.py` — `PROMPT_FILE` flipped from `risk_manager_v1.txt` to `risk_manager_v2.txt`
+- `src/backtest/signals.py` — new `_sanitize_stop_levels(close_price, sl_pct, tp_pct, atr_14)`: code-level guard that corrects invalid stop/target ratios regardless of LLM output. If `sl_pct ≥ 1.0` (stop above entry) or `≤ 0`, replaces with `2×ATR below entry` floored at 80% of entry. If `tp_pct ≤ 1.0` (target below entry), replaces with `3×ATR above entry` (preserves ≥1.5 R:R). Applied immediately after the raw ratio computation in the signal loop.
+
+### Tests
+- `tests/test_backtest.py` — new `TestSanitizeStopLevels` (14 cases): ATH-anchoring bug reproduction, ATR fallback formula verification, 80% floor enforcement, valid values pass through unchanged, tp-below-entry correction, R:R ≥ 1.5 check after sanitization, zero-ATR and zero-close edge cases. Test suite: **291 → 305** passing.
+
 ## Feature — 2026-04-22 (v2: restore agent sight + replace rigid consensus)
 
 Implements `specs/v2.md` phases 1–4. Phase 5 (tuning + holdout backtest) is pending real API runs. Test suite: **235 → 283** passing.
