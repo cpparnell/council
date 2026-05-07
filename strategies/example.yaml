@@ -19,7 +19,7 @@ version: "1"
 #
 # At most ONE agent may have is_veto: true. That agent outputs {veto, veto_reason, reasoning}
 # instead of {direction, confidence, reasoning}. Use prompts/veto_agent_template.txt as a
-# starting point for a veto agent prompt.
+# starting point for a veto agent prompt (see prompts/veto_agent_template.txt).
 #
 # Directional agents use prompts/agent_template.txt as a starting point.
 agents:
@@ -45,7 +45,7 @@ agents:
 deliberation:
   enabled: true
   model: claude-sonnet-4-6
-  prompt: prompts/deliberation_generic_v1.txt
+  prompt: prompts/deliberation_generic.txt
 
 # scoring — controls how directional agent outputs become a final signal.
 scoring:

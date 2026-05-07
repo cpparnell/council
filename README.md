@@ -2,6 +2,8 @@
 
 A Bitcoin swing trading framework built around a **council of LLM agents** that vote on daily BUY/SELL/HOLD signals. Fully configurable — define your own agents, weights, and risk rules in a single YAML file without writing code.
 
+Try and develop a winning trading strategy. I didn't before I got bored, but maybe you can!
+
 ## Architecture
 
 ```
@@ -41,7 +43,7 @@ pip install -e ".[dev]"
 cp .env.example .env   # fill in ANTHROPIC_API_KEY at minimum
 ```
 
-## Custom Strategies (v3)
+## Custom Strategies
 
 Define a strategy as a YAML file — no Python required.
 
