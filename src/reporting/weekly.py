@@ -28,7 +28,7 @@ from src.db.store import (
 from src.reporting.metrics import compute_all_metrics
 
 MODEL = "claude-sonnet-4-6"
-PROMPT_FILE = "weekly_summary_v1.txt"
+PROMPT_FILE = "personal/weekly_summary_v1.txt"
 
 
 def _build_weekly_user_message(

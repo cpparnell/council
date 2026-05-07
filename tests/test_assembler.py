@@ -154,3 +154,75 @@ class TestAssemblerValidation:
         ):
             with pytest.raises(ValidationError, match="Insufficient"):
                 await assemble_context()
+
+
+class TestAssemblerOverrides:
+    """Tests for the backtest override parameters added in v1."""
+
+    @pytest.fixture(autouse=True)
+    def _patch_price(self):
+        df = _fake_ohlcv_df()
+        with (
+            patch("src.data.assembler.get_exchange", return_value=_MOCK_EXCHANGE),
+            patch("src.data.assembler.fetch_ohlcv", return_value=df),
+        ):
+            yield
+
+    async def test_news_override_skips_live_fetch(self):
+        from src.data.assembler import assemble_context
+        custom_news = [
+            {"headline": f"Custom {i}", "source": "stub", "published_at": "2024-01-01T00:00:00Z"}
+            for i in range(15)
+        ]
+        with (
+            patch("src.data.assembler.fetch_news", new=AsyncMock(side_effect=Exception("should not be called"))),
+            patch("src.data.assembler.fetch_sentiment", new=AsyncMock(return_value=_FAKE_SENTIMENT)),
+            patch("src.data.assembler.fetch_onchain", new=AsyncMock(return_value=_FAKE_ONCHAIN)),
+        ):
+            ctx = await assemble_context(news_override=custom_news, skip_freshness=True)
+        assert ctx.news[0].headline == "Custom 0"
+
+    async def test_sentiment_override_skips_live_fetch(self):
+        from src.data.assembler import assemble_context
+        custom_sentiment = {"fear_greed_index": 25, "reddit_sentiment": "bearish", "social_volume_vs_avg": 0.8}
+        with (
+            patch("src.data.assembler.fetch_news", new=AsyncMock(return_value=_FAKE_NEWS)),
+            patch("src.data.assembler.fetch_sentiment", new=AsyncMock(side_effect=Exception("should not be called"))),
+            patch("src.data.assembler.fetch_onchain", new=AsyncMock(return_value=_FAKE_ONCHAIN)),
+        ):
+            ctx = await assemble_context(sentiment_override=custom_sentiment, skip_freshness=True)
+        assert ctx.sentiment.fear_greed_index == 25
+        assert ctx.sentiment.reddit_sentiment == "bearish"
+
+    async def test_onchain_override_skips_live_fetch(self):
+        from src.data.assembler import assemble_context
+        custom_onchain = {"exchange_net_flow_btc": 100.0, "whale_transactions_24h": 50, "sopr": 0.99}
+        with (
+            patch("src.data.assembler.fetch_news", new=AsyncMock(return_value=_FAKE_NEWS)),
+            patch("src.data.assembler.fetch_sentiment", new=AsyncMock(return_value=_FAKE_SENTIMENT)),
+            patch("src.data.assembler.fetch_onchain", new=AsyncMock(side_effect=Exception("should not be called"))),
+        ):
+            ctx = await assemble_context(onchain_override=custom_onchain, skip_freshness=True)
+        assert ctx.onchain.exchange_net_flow_btc == 100.0
+
+    async def test_timestamp_override_used_in_context(self):
+        from src.data.assembler import assemble_context
+        historical_ts = datetime(2024, 6, 15, 0, 0, 0, tzinfo=timezone.utc)
+        with (
+            patch("src.data.assembler.fetch_news", new=AsyncMock(return_value=_FAKE_NEWS)),
+            patch("src.data.assembler.fetch_sentiment", new=AsyncMock(return_value=_FAKE_SENTIMENT)),
+            patch("src.data.assembler.fetch_onchain", new=AsyncMock(return_value=_FAKE_ONCHAIN)),
+        ):
+            ctx = await assemble_context(timestamp=historical_ts, skip_freshness=True)
+        assert ctx.timestamp == historical_ts
+
+    async def test_skip_freshness_allows_old_timestamp(self):
+        from src.data.assembler import assemble_context
+        old_ts = datetime(2020, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        with (
+            patch("src.data.assembler.fetch_news", new=AsyncMock(return_value=_FAKE_NEWS)),
+            patch("src.data.assembler.fetch_sentiment", new=AsyncMock(return_value=_FAKE_SENTIMENT)),
+            patch("src.data.assembler.fetch_onchain", new=AsyncMock(return_value=_FAKE_ONCHAIN)),
+        ):
+            ctx = await assemble_context(timestamp=old_ts, skip_freshness=True)
+        assert isinstance(ctx, MarketContext)

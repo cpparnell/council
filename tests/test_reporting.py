@@ -113,7 +113,7 @@ def _seed_closed_trade(engine, pnl_usd: float, entry: float = 80000.0, offset_da
     delib = _make_deliberation()
     cycle_id = log_cycle(engine, ctx, outputs, delib)
     trade_id = open_trade(
-        engine, cycle_id=cycle_id, symbol="BTC/USDT", side="BUY",
+        engine, cycle_id=cycle_id, symbol="BTC/USD", side="BUY",
         entry_price=entry, position_size_usd=1000.0, stop_loss=75000.0,
     )
     # exit price to produce the desired pnl: pnl = (exit - entry) * btc
@@ -348,7 +348,7 @@ class TestComputeAllMetrics:
 class TestBuildWeeklyUserMessage:
     def _make_trade(self, tid: int = 1, pnl: float = 100.0) -> dict:
         return {
-            "id": tid, "side": "BUY", "symbol": "BTC/USDT",
+            "id": tid, "side": "BUY", "symbol": "BTC/USD",
             "entry_price": 80000.0, "exit_price": 81000.0,
             "stop_loss": 75000.0, "pnl_usd": pnl, "pnl_pct": 1.25,
             "status": "closed",

@@ -15,7 +15,7 @@ from src.agents.base import AgentError, load_prompt
 from src.models import CouncilOutputs, DeliberationOutput
 
 MODEL = "claude-sonnet-4-6"
-PROMPT_FILE = "reflection_v1.txt"
+PROMPT_FILE = "personal/reflection_v1.txt"
 
 
 def _build_user_message(

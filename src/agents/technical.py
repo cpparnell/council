@@ -6,7 +6,7 @@ from src.agents.base import AgentError, call_agent, load_prompt
 from src.models import MarketContext, TechnicalAnalystOutput
 
 MODEL = "claude-haiku-4-5"
-PROMPT_FILE = "technical_analyst_v1.txt"
+PROMPT_FILE = "technical_analyst_v2.txt"
 
 
 def _build_user_message(ctx: MarketContext) -> str:

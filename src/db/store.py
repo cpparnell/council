@@ -116,7 +116,7 @@ def close_trade(
         return dict(updated)
 
 
-def get_open_trade(engine: Engine, symbol: str = "BTC/USDT") -> dict | None:
+def get_open_trade(engine: Engine, symbol: str = "BTC/USD") -> dict | None:
     """Return the currently open trade for *symbol*, or None."""
     with engine.connect() as conn:
         row = conn.execute(

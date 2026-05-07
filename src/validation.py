@@ -56,7 +56,11 @@ def validate_price_freshness(ctx: MarketContext, max_age_minutes: int = 5) -> No
 
 
 def validate_news_count(ctx: MarketContext, min_items: int = 10) -> None:
-    """Reject the cycle if fewer than *min_items* news articles were retrieved."""
+    """Reject the cycle if fewer than *min_items* news articles were retrieved.
+
+    Backtest callers pass a lower floor (5) because the GDELT allowlist can be
+    thin on some historical dates. Live callers keep the default of 10.
+    """
     if len(ctx.news) < min_items:
         raise ValidationError(
             f"Insufficient news: {len(ctx.news)} items retrieved, need ≥ {min_items}"
@@ -96,44 +100,77 @@ def validate_numeric_fields(ctx: MarketContext) -> None:
         )
 
 
-def check_drawdown_halt(ctx: MarketContext) -> None:
-    """Halt trading if the portfolio has lost more than MAX_DRAWDOWN_HALT_PCT
-    from its peak value.
+def check_drawdown_halt(
+    ctx: MarketContext,
+    max_drawdown_pct: float = MAX_DRAWDOWN_HALT_PCT,
+) -> None:
+    """Halt trading if the portfolio has lost more than *max_drawdown_pct* from its peak.
 
     This is a hard rule — it cannot be overridden by any agent.
+
+    Args:
+        max_drawdown_pct: Decimal threshold (0.15 = 15%). Defaults to the
+                          module constant MAX_DRAWDOWN_HALT_PCT.
     """
-    if ctx.portfolio.current_drawdown_pct > MAX_DRAWDOWN_HALT_PCT:
+    if ctx.portfolio.current_drawdown_pct > max_drawdown_pct:
         raise HardRuleViolation(
             f"Drawdown halt: portfolio is down "
             f"{ctx.portfolio.current_drawdown_pct:.1%} from peak "
-            f"(threshold {MAX_DRAWDOWN_HALT_PCT:.1%})"
+            f"(threshold {max_drawdown_pct:.1%})"
         )
 
 
-def check_volatility_halt(ctx: MarketContext) -> None:
-    """Halt trading if current ATR-14 exceeds MAX_ATR_MULTIPLIER × 30-candle average.
+def check_volatility_halt(
+    ctx: MarketContext,
+    atr_spike_multiplier: float = MAX_ATR_MULTIPLIER,
+) -> None:
+    """Halt trading if current ATR-14 exceeds *atr_spike_multiplier* × 30-candle average.
 
     Uses ctx.indicators.atr_30_avg computed by the indicators module.
     Skips the check when atr_30_avg is zero (e.g. on a stub context).
+
+    Args:
+        atr_spike_multiplier: Multiplier applied to the 30-candle ATR average.
     """
     avg = ctx.indicators.atr_30_avg
     if avg <= 0:
         return
-    if ctx.indicators.atr_14 > MAX_ATR_MULTIPLIER * avg:
+    if ctx.indicators.atr_14 > atr_spike_multiplier * avg:
         raise HardRuleViolation(
             f"Volatility halt: ATR-14 {ctx.indicators.atr_14:.0f} > "
-            f"{MAX_ATR_MULTIPLIER}× 30-candle average {avg:.0f}"
+            f"{atr_spike_multiplier}× 30-candle average {avg:.0f}"
         )
 
 
-def validate_context(ctx: MarketContext) -> None:
+def validate_context(
+    ctx: MarketContext,
+    skip_freshness: bool = False,
+    min_news_items: int = 10,
+    max_drawdown_pct: float = MAX_DRAWDOWN_HALT_PCT,
+    atr_spike_multiplier: float = MAX_ATR_MULTIPLIER,
+) -> None:
     """Run all Tier-0 checks in order.
 
     Call this once after assembling the context and before invoking any agent.
     Any exception here must produce a HOLD signal.
+
+    Args:
+        ctx: The assembled MarketContext to validate.
+        skip_freshness: When True, the price-freshness check is skipped.
+                        Pass True for historical backtest contexts whose
+                        timestamps are intentionally in the past.
+        min_news_items: Minimum news count required. Live mode uses 10;
+                        backtest mode uses 5 (GDELT historical coverage
+                        can be thinner than live CryptoPanic).
+        max_drawdown_pct: Decimal drawdown halt threshold (0.15 = 15%).
+                          Sourced from strategy ValidationConfig when using
+                          the generic runner.
+        atr_spike_multiplier: ATR halt multiplier. Sourced from strategy
+                              ValidationConfig when using the generic runner.
     """
-    validate_price_freshness(ctx)
-    validate_news_count(ctx)
+    if not skip_freshness:
+        validate_price_freshness(ctx)
+    validate_news_count(ctx, min_items=min_news_items)
     validate_numeric_fields(ctx)
-    check_drawdown_halt(ctx)
-    check_volatility_halt(ctx)
+    check_drawdown_halt(ctx, max_drawdown_pct=max_drawdown_pct)
+    check_volatility_halt(ctx, atr_spike_multiplier=atr_spike_multiplier)

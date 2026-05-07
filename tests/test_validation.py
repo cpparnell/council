@@ -299,3 +299,13 @@ class TestValidateContext:
         )
         with pytest.raises(HardRuleViolation):
             validate_context(_make_ctx(portfolio=portfolio))
+
+    def test_skip_freshness_bypasses_stale_check(self):
+        stale_ts = datetime.now(timezone.utc) - timedelta(days=30)
+        # Would raise ValidationError without skip_freshness=True
+        validate_context(_make_ctx(timestamp=stale_ts), skip_freshness=True)
+
+    def test_skip_freshness_false_still_fails_stale(self):
+        stale_ts = datetime.now(timezone.utc) - timedelta(minutes=10)
+        with pytest.raises(ValidationError):
+            validate_context(_make_ctx(timestamp=stale_ts), skip_freshness=False)

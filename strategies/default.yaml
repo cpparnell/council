@@ -1,0 +1,48 @@
+# Default strategy — migrated equivalent of the v2 council
+# Technical (40%) + Sentiment (25%) + Fundamental (35%) + Risk veto
+name: "BTC Council v2"
+version: "2"
+
+agents:
+  - name: technical
+    model: claude-haiku-4-5
+    prompt: prompts/personal/technical_analyst_v2.txt
+    weight: 0.40
+
+  - name: sentiment
+    model: claude-haiku-4-5
+    prompt: prompts/personal/sentiment_analyst_v2.txt
+    weight: 0.25
+
+  - name: fundamental
+    model: claude-haiku-4-5
+    prompt: prompts/personal/fundamental_analyst_v2.txt
+    weight: 0.35
+
+  - name: risk
+    model: claude-sonnet-4-6
+    prompt: prompts/personal/risk_manager_veto_v1.txt
+    is_veto: true
+
+deliberation:
+  enabled: true
+  model: claude-sonnet-4-6
+  prompt: prompts/personal/deliberation_generic_v1.txt
+
+scoring:
+  confidence_floor: 30
+  trade_threshold: 0.25
+
+risk:
+  stop_loss:
+    type: atr_multiple
+    value: 2.0
+  take_profit:
+    type: atr_multiple
+    value: 3.0
+  max_position_pct: 20.0
+
+validation:
+  max_drawdown_pct: 15.0
+  atr_spike_multiplier: 2.0
+  min_news_count: 5

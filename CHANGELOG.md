@@ -1,6 +1,178 @@
 # Changelog
 
-## Phase 4 — 2026-04-05
+## Feature — 2026-04-30 (v3: strategy framework — config-driven council)
+
+Implements `specs/v3.md` phases 1–6. Users can now define a complete trading strategy in a single YAML file without writing Python. Test suite: **305 → 344** passing.
+
+### Added
+- `src/strategies/config.py` — typed `StrategyConfig` Pydantic model: `AgentConfig` (name, model, prompt, weight, is_veto), `DeliberationConfig` (optional), `ScoringConfig` (confidence_floor, trade_threshold), `RiskRules` (stop_loss/take_profit SLTPRule + max_position_pct), `ValidationConfig` (max_drawdown_pct, atr_spike_multiplier, min_news_count); `model_validator` enforces weight-sum=1.0 and at-most-one veto agent
+- `src/strategies/loader.py` — `load_strategy(path)`: loads YAML, validates schema, and checks all prompt files exist on disk; prompt paths are resolved relative to project root
+- `src/strategies/context.py` — `render_context_block(ctx)`: renders the full `MarketContext` as a structured text block (PRICE / INDICATORS / NEWS / SENTIMENT / ON-CHAIN / MACRO / PORTFOLIO sections); single shared input for all agents in a generic run
+- `src/strategies/runner.py` — `run_strategy_council(ctx, config, client)`: config-driven generic runner; runs all agents in parallel; short-circuits to HOLD on veto; calls `compute_generic_score`; optionally runs deliberation; computes SL/TP via `compute_sl_tp`; returns `GenericCouncilResult`
+- `src/strategies/scoring.py` — `compute_generic_score(outputs, config)`: config-driven confidence-weighted signed-score; weights normalised at call time; confidence_floor and trade_threshold sourced from `ScoringConfig`; `score_to_position_size_pct(score, config)` scales size from |score|
+- `src/strategies/risk_rules.py` — `compute_sl_tp(rules, ctx, entry_price)`: computes SL/TP prices from `RiskRules`; supports `atr_multiple` (price ± N×ATR-14), `fixed_pct` (price × (1 ± pct)), and `none` (0.0, 0.0); SL clamped > 0
+- `strategies/default.yaml` — current v2 council expressed as a strategy file (technical 0.40 / sentiment 0.25 / fundamental 0.35 / risk veto; deliberation enabled; scoring thresholds and validation thresholds matching current hardcoded constants)
+- `strategies/example.yaml` — fully-commented example strategy (`momentum` + `macro` + `risk_guard` veto); shows every config option
+- `prompts/deliberation_generic_v1.txt` — built-in deliberation prompt for generic runs; requests a 2–4 sentence narrative synthesis
+- `prompts/agent_template.txt` — starting-point prompt for directional agents with annotated output schema and confidence calibration guide
+- `prompts/veto_agent_template.txt` — starting-point prompt for veto agents with `VetoAgentOutput` schema guidance
+- `prompts/risk_manager_veto_v1.txt` — purpose-built veto prompt for `default.yaml`'s risk agent (cleaner than repurposing `risk_manager_v2.txt`)
+- `tests/test_strategy_loader.py` (12 tests) — valid configs, weight validation, veto count, missing fields, missing prompt files, `default.yaml` and `example.yaml` smoke loads
+- `tests/test_strategy_scoring.py` (16 tests) — all directions, confidence floor exclusion, threshold gating, weighted score formula, SL/TP for all three rule types
+- `tests/test_strategy_runner.py` (8 tests) — BUY/HOLD/SELL signals, veto short-circuit, veto=false passthrough, SL/TP on result, conviction derivation, deliberation failure non-fatal, no-veto-agent skips veto call
+- `tests/test_strategy_parity.py` (3 tests) — BUY/HOLD/veto scenarios confirm generic and legacy scorers agree on identical inputs
+
+### Changed
+- `src/models.py` — added `GenericAgentOutput`, `VetoAgentOutput`, `GenericCouncilOutputs`, `GenericDeliberationOutput` (additive; all existing models unchanged)
+- `src/validation.py` — `check_drawdown_halt` and `check_volatility_halt` now accept `max_drawdown_pct` and `atr_spike_multiplier` params (backward-compatible defaults match previous constants); `validate_context` accepts both params and passes them through
+- `src/data/assembler.py` — `assemble_context` accepts `max_drawdown_pct` and `atr_spike_multiplier` params and passes them to `validate_context`
+- `src/main.py` — added `--strategy PATH` CLI argument; when provided, calls `run_strategy_council` instead of legacy `run_council`; validation params derived from strategy config
+- `src/backtest/signals.py` — `generate_signals` accepts `strategy_config` param; routes to generic runner when provided; agent logs written per-agent-name for generic runs
+- `src/backtest/engine.py` — `run_backtest` accepts `strategy_config` param; `_parse_args` adds `--strategy PATH`
+- `pyproject.toml` — added `pyyaml>=6.0` as explicit dependency (was transitively available; now declared)
+
+## Bugfix — 2026-04-27 (risk manager stop-loss above entry price)
+
+### Fixed
+- `prompts/risk_manager_v2.txt` — rewritten to prevent the model from anchoring `recommended_stop_loss` to historical BTC ATH levels (~$70–74k) instead of computing downward from the current price. Key changes: explicitly states the system is long-only (removed the "above entry for SELL" clause that confused the model); requires `recommended_stop_loss MUST be LESS THAN the current price`; provides the placement formula as a concrete equation (`stop = current_price − multiplier × ATR-14`); adds a worked example with actual numbers ($23k BTC / $1,500 ATR-14); adds "DO NOT use historical ATH prices as reference points"
+- `src/agents/risk.py` — `PROMPT_FILE` flipped from `risk_manager_v1.txt` to `risk_manager_v2.txt`
+- `src/backtest/signals.py` — new `_sanitize_stop_levels(close_price, sl_pct, tp_pct, atr_14)`: code-level guard that corrects invalid stop/target ratios regardless of LLM output. If `sl_pct ≥ 1.0` (stop above entry) or `≤ 0`, replaces with `2×ATR below entry` floored at 80% of entry. If `tp_pct ≤ 1.0` (target below entry), replaces with `3×ATR above entry` (preserves ≥1.5 R:R). Applied immediately after the raw ratio computation in the signal loop.
+
+### Tests
+- `tests/test_backtest.py` — new `TestSanitizeStopLevels` (14 cases): ATH-anchoring bug reproduction, ATR fallback formula verification, 80% floor enforcement, valid values pass through unchanged, tp-below-entry correction, R:R ≥ 1.5 check after sanitization, zero-ATR and zero-close edge cases. Test suite: **291 → 305** passing.
+
+## Feature — 2026-04-22 (v2: restore agent sight + replace rigid consensus)
+
+Implements `specs/v2.md` phases 1–4. Phase 5 (tuning + holdout backtest) is pending real API runs. Test suite: **235 → 283** passing.
+
+### Added
+- `src/data/news_historical.py` — `fetch_news_for_date(as_of)`: GDELT DOC 2.0 `artlist` query filtered to a source allowlist (Reuters, Bloomberg, CoinDesk, WSJ, FT, CoinTelegraph, Forbes, CNBC, The Block, Decrypt); strict `as_of - 24h` publish-lag cutoff; disk cache at `tmp/cache/gdelt/YYYY-MM-DD.json`; returns `[]` on HTTP error so the caller can fall back to the stub
+- `src/data/onchain_historical.py` — `fetch_onchain_for_date(as_of)`: CoinMetrics Community API (`community-api.coinmetrics.io/v4/timeseries/asset-metrics`); preserves existing `OnchainData` field names but fills them with documented proxies — MVRV (CapMrktCurUSD / CapRealUSD) as `sopr`, 7-day transfer-volume momentum as `exchange_net_flow_btc`, active-address count / 1000 as `whale_transactions_24h`; slices strictly `date < as_of.date()`; disk cache at `tmp/cache/coinmetrics/`
+- `src/data/macro.py` — `fetch_macro_for_date(as_of)`: yfinance bundle for `DX-Y.NYB`, `^VIX`, `^GSPC`, `^TNX` (divides by 10 to correct the yfinance ×10 quote); computes `macro_bias` from VIX band, DXY 20-session trend, and SPX 20-session trend; falls back to `macro_bias=neutral` on any empty frame
+- `src/models.py` — new `MacroData` model (vix, dxy, spx_20d_change_pct, tnx_yield_pct, macro_bias); new optional `macro: MacroData | None = None` field on `MarketContext`; new `score: float = 0.0` field on `DeliberationOutput`
+- `src/agents/scoring.py` — `compute_signed_score(outputs)`: confidence-weighted signed-score over the three directional agents (weights 0.40 tech / 0.25 sentiment / 0.35 fundamental); confidence floor 30 (agents below abstain rather than dilute); threshold 0.25 to trade; risk-veto overrides unconditionally. `score_to_position_size_pct(score)` derives size from `|score|`, capped at 20%
+- `prompts/technical_analyst_v2.txt`, `sentiment_analyst_v2.txt`, `fundamental_analyst_v2.txt`, `deliberation_v2.txt` — v1 prompts retained in-tree; v2 prompts instruct directional agents to use the full 0–100 confidence range and be more assertive in clear regimes; deliberation rewritten to produce narrative only (scoring happens in Python); fundamental prompt documents the MVRV-as-SOPR proxy so the agent reasons about it correctly
+- `tests/test_news_historical.py`, `tests/test_onchain_historical.py`, `tests/test_macro.py` — full coverage with mocked HTTP and yfinance; tests lookahead boundaries, cache round-trips, fallback paths
+- `tests/test_agents.py` — `TestComputeSignedScore` (8 cases: all-BUY / all-SELL / veto override / all-HOLD / confidence floor / split directions / sub-threshold / all-abstain) and `TestScoreToPositionSize` (4 cases); new `test_scored_signal_overrides_llm_deliberation` verifying the runner discards the LLM's `final_signal` and substitutes the deterministic score
+
+### Changed
+- `src/validation.py` — `validate_news_count` and `validate_context` take `min_news_items: int = 10`; backtest callers pass 5 (GDELT allowlist can be thin on some dates)
+- `src/data/assembler.py` — new `macro_override: MacroData | None` parameter; new `min_news_items: int = 10` parameter plumbed through to `validate_context`
+- `src/agents/deliberation.py` — `PROMPT_FILE` flipped to `deliberation_v2.txt`
+- `src/agents/technical.py`, `sentiment.py`, `fundamental.py` — `PROMPT_FILE` flipped to `_v2.txt` variants
+- `src/agents/fundamental.py` — user-message builder now includes a `Macro backdrop:` block when `ctx.macro` is populated; on-chain field labels re-worded to match the v2 proxy semantics
+- `src/agents/runner.py` — imports `compute_signed_score`; after deliberation, calls `llm_deliberation.model_copy(update={"final_signal": scored_signal, "score": score})` so the deterministic scorer owns the final signal while the LLM still supplies narrative; risk-veto short-circuit preserved (skips the deliberation LLM call entirely)
+- `src/backtest/signals.py` — replaces `NEUTRAL_NEWS_STUB` with `fetch_news_for_date` (stub fallback when < 5 items); replaces `NEUTRAL_ONCHAIN_STUB` with `fetch_onchain_for_date`; threads `fetch_macro_for_date` into `macro_override`; sizes positions via `min(score_to_position_size_pct(score), risk.approved_position_size_pct)`; `SIGNAL_COLUMNS` gains a `score` column (surfaced in the CSV and the DataFrame)
+- `README.md` — new v2 phase table; lists each module created
+
+## Update — 2026-04-20 (per-cycle agent response logs)
+
+### Added
+- `src/backtest/signals.py` — `_append_agent_log(path, date, data)`: appends a JSON Lines entry `{"date": "...", "output": {...}}` to an agent file and closes immediately; `generate_signals` accepts a new `agent_log_dir: Path | None` parameter and calls this after each successful cycle, writing `technical_analyst.json`, `sentiment_analyst.json`, `fundamental_analyst.json`, `risk_manager.json`, and `deliberation.json` under `tmp/YYYYMMDD_HHMMSS/agents/`
+- `src/backtest/engine.py` — derives `agent_log_dir = run_dir / "agents"` and passes it to `generate_signals`; end-of-run summary now prints the `agents/` folder
+
+### Fixed
+- `src/models.py` — `RiskManagerOutput`: added `field_validator` on `recommended_stop_loss`, `recommended_take_profit`, and `risk_reward_ratio` to strip commas before float parsing, fixing `AgentError` when the model returns formatted numbers like `'71,001.50'`
+
+## Update — 2026-04-20 (backtest run output to tmp/, incremental CSV)
+
+### Changed
+- `src/backtest/engine.py` — `_setup_run_dir` default base changed from `runs/` to `tmp/`; timestamped run folders now live under `tmp/YYYYMMDD_HHMMSS/`
+- `src/backtest/engine.py` — `run_backtest` now resolves `csv_path` before calling `generate_signals` and passes it in; the post-hoc `signals_df.to_csv()` call is removed
+- `src/backtest/signals.py` — `generate_signals` accepts a new `csv_path: Path | None` parameter; when set, opens the file before the signal loop, writes the header row, then flushes one CSV row per completed cycle so the file is preserved if the run is killed mid-way
+
+## Feature — 2026-04-20 (run output folder)
+
+### Added
+- `src/backtest/engine.py` — `_setup_run_dir(base)`: creates `runs/YYYYMMDD_HHMMSS/` on each invocation; adds a `logging.StreamHandler` pointing at `run.log` inside that directory (StreamHandler flushes after every record); tees `sys.stdout` and `sys.stderr` through `_TeeStream` so all `print()` output is also captured; uses `buffering=1` (line-buffered) so every newline triggers an OS write and output is preserved if the process is killed
+- `_TeeStream`: lightweight wrapper that mirrors writes to two streams simultaneously
+- `run_backtest` now accepts an optional `run_dir: Path` parameter; when provided, the signals CSV is written into that directory instead of the working directory
+- CSV filename changed from `backtest_signals_<full-datetime-with-tz>.csv` (contained colons, broke on some OS) to `backtest_signals_YYYYMMDD_YYYYMMDD.csv` (start/end dates)
+- End-of-run summary prints the run folder path, CSV filename, and log filename
+
+### Fixed
+- `run_backtest` previously called `datetime.now()` twice for the CSV filename, producing a different timestamp in the returned `csv_path` than the one used when writing the file
+
+## Bugfix — 2026-04-20 (structured JSON output via tool use)
+
+### Fixed
+- `src/agents/base.py` — replaced free-form text generation + markdown-fence stripping with Anthropic tool use (`tools` + `tool_choice={"type": "tool"}`); the API now returns a `tool_use` block whose `.input` is a guaranteed parsed dict, eliminating the `non-JSON output` errors caused by models wrapping responses in ` ```json ``` ` fences with trailing prose
+- Removed `_extract_json` helper and `import json` (no longer needed)
+- `AgentError` now raised with `"tool_use block"` message when the response contains no tool-use block (e.g. unexpected `end_turn`)
+
+### Tests
+- `tests/test_agents.py` — updated `_mock_response`/`_mock_client` to return a mock with `type="tool_use"` and `.input=payload` instead of a text block; replaced `test_strips_markdown_fences` and `test_raises_on_non_json` (scenarios no longer possible) with `test_raises_on_missing_tool_use_block`; removed unused `import json`; 235 tests passing
+
+## Bugfix — 2026-04-06 (fractional trading + dotenv)
+
+### Fixed
+- `src/backtest/engine.py` — switched from `Backtest` to `FractionalBacktest` (backtesting.lib); BTC trades in fractional units so any `--capital` value now works without orders being silently canceled
+- `src/backtest/signals.py` — replaced `sl_price`/`tp_price` (raw USD) with `sl_pct`/`tp_pct` (ratio relative to close, e.g. 0.95 = 5% stop below close); `FractionalBacktest` scales OHLCV prices internally (to satoshi units) so absolute USD prices caused constraint failures (`SL < execution_price < TP` always failed against the scaled price)
+- `src/backtest/engine.py` strategy — `next()` now computes `sl = Close * sl_pct` and `tp = Close * tp_pct`, which scales correctly under any price transformation
+- `tests/test_backtest.py` — updated all test fixtures and `_make_signals_df` to use `sl_pct`/`tp_pct`; `_run_strategy` cash reverted to `$10,000` (fractional support makes large cash workaround unnecessary)
+
+## Bugfix — 2026-04-06
+
+### Fixed
+- `src/main.py`, `src/backtest/engine.py` — added `load_dotenv()` call at startup; `.env` file was never being read, so `ANTHROPIC_API_KEY` and all other env vars were silently missing at runtime
+
+## v1 Phase 6 (Historical Data Source) — 2026-04-06
+
+### Changed
+- `src/backtest/data.py` — `fetch_full_ohlcv` rewritten to use `yfinance.download("BTC-USD")` instead of CCXT; removes exchange parameter and pagination loop; handles MultiIndex columns (yfinance 0.2+); UTC-localizes index
+- `src/backtest/engine.py` — `run_backtest` no longer creates a Kraken exchange for data fetching; `get_exchange` import removed
+- `pyproject.toml` — added `yfinance>=0.2.0`
+
+### Fixed
+- Kraken's public OHLC API only serves the most recent ~720 daily candles regardless of the `since` parameter; requesting data older than that (e.g. `--start 2024-01-01` from April 2026) returned 0 candles. yfinance provides BTC-USD history back to 2014 with no API key.
+
+### Tests
+- `tests/test_backtest.py` — replaced CCXT-based `fetch_full_ohlcv` tests with yfinance mocks; removed `get_exchange` mock from `run_backtest` tests
+
+## v1 Phase 5 (Exchange Migration) — 2026-04-06 (revised)
+
+### Fixed
+- `src/data/price.py` — corrected CCXT symbol from `"XBT/USD"` to `"BTC/USD"`; CCXT normalizes Kraken's internal XBT ticker to BTC in its unified API, so `XBT/USD` raises `BadSymbol` at runtime
+
+## v1 Phase 5 (Exchange Migration) — 2026-04-06
+
+### Changed
+- `src/data/price.py` — replaced `ccxt.binance` with `ccxt.kraken`; `SYMBOL` changed from `"BTC/USDT"` to `"XBT/USD"`; removed Binance testnet URL logic; credentials now read from `KRAKEN_API_KEY` / `KRAKEN_SECRET`; `sandbox` param retained for interface compat but ignored (Kraken has no spot sandbox)
+- `src/execution/router.py` — `SYMBOL = "XBT/USD"`
+- `src/execution/state.py` — default symbol updated to `"XBT/USD"`
+- `src/execution/orders.py` — docstring updated (Binance → Kraken)
+- `src/db/store.py` — default symbol in `get_open_trade` updated to `"XBT/USD"`
+- `src/main.py` — `SYMBOL = "XBT/USD"`; env var docs reflect Kraken credentials; paper trading note updated (DRY_RUN=1 replaces testnet)
+- `src/data/assembler.py` — docstring updated
+- `.env.example` — replaced `BINANCE_TESTNET_API_KEY/SECRET` and `BINANCE_API_KEY/SECRET` with `KRAKEN_API_KEY` / `KRAKEN_SECRET`
+- `tests/test_execution.py`, `tests/test_db.py`, `tests/test_reporting.py` — all `"BTC/USDT"` references updated to `"XBT/USD"`
+
+**Why:** Binance is geo-restricted in the United States. Kraken is fully US-accessible, free for market data, and provides BTC/USD history back to 2013 via CCXT public endpoints.
+
+**Paper trading:** Kraken has no spot sandbox. Paper trading uses `DRY_RUN=1` (signals logged, no orders placed). Live trading requires `KRAKEN_API_KEY` + `KRAKEN_SECRET`.
+
+## v1 Phase 1–4 (Backtesting) — 2026-04-06
+
+### Added
+- `src/backtest/__init__.py` — new backtest package
+- `src/backtest/data.py` — `fetch_full_ohlcv` (paginated CCXT download), `slice_ohlcv` (strict no-lookahead enforcement), `fetch_historical_sentiment` (Alternative.me Fear & Greed history), `get_sentiment_for_date` (nearest-earlier fallback), `NEUTRAL_NEWS_STUB` (15 generic items), `NEUTRAL_ONCHAIN_STUB`
+- `src/backtest/signals.py` — `generate_signals`: async LLM council loop over each historical date; `_PortfolioTracker` dataclass (cash/position/drawdown tracking); `SIGNAL_COLUMNS` constant; graceful HOLD fallback on `AgentError`
+- `src/backtest/engine.py` — `LLMCouncilStrategy` (backtesting.py Strategy replaying pre-computed signals); `run_backtest` async runner (fetch → signals → simulate → formatted stats dict); CLI via `python -m src.backtest.engine --start --end --capital`
+- `tests/test_backtest.py` — 26 tests: `TestBacktestData` (slice no-lookahead, pagination, sentiment fallbacks, news stub), `TestGenerateSignals` (column schema, date count, lookahead guard, error fallback, portfolio tracker), `TestRunBacktest` (strategy execution, stop-loss trigger, stats keys)
+- `backtesting>=0.3.3` added to `pyproject.toml`
+
+### Changed
+- `src/data/price.py` — added `since: int | None = None` to `fetch_ohlcv` for historical backfill
+- `src/data/assembler.py` — added `timestamp`, `news_override`, `sentiment_override`, `onchain_override`, `skip_freshness` optional params to `assemble_context`; backward compatible (all default to `None`/`False`)
+- `src/validation.py` — added `skip_freshness: bool = False` to `validate_context`; when `True`, skips price freshness check (used by backtest engine)
+- `tests/test_assembler.py` — updated to cover new override parameters
+- `tests/test_validation.py` — updated to cover `skip_freshness` flag
+
+### Fixed
+- `src/backtest/data.py` — `fetch_full_ohlcv` now correctly handles timezone-aware `end_date` arguments using `tz_localize`/`tz_convert` instead of `pd.Timestamp(dt, tz=...)` which raises on already-aware datetimes
+- `tests/test_backtest.py` — `_run_strategy` default cash raised from $10k to $1M so 20% position sizing can purchase at least one whole BTC unit at realistic price levels ($40k–$50k) without backtesting.py silently canceling orders
+
+## v0 Phase 4 — 2026-04-05
 
 ### Added
 - `src/db/schema.py` — added `weekly_summaries` table (`window_start`, `window_end`, `summary`, `metrics_json`)
@@ -13,7 +185,7 @@
 - `.env.example` — documented `TRADING_MODE`, `COUNCIL_LIVE_CONFIRMED`, `BINANCE_API_KEY/SECRET`, `COUNCIL_DB_PATH`, `DRY_RUN`
 - `tests/test_reporting.py` — 49 tests: Sharpe, max drawdown, expectancy, consistency, all-metrics, weekly message builder, `run_weekly_summary`, store windowed queries
 
-## Phase 3 — 2026-04-05
+## v0 Phase 3 — 2026-04-05
 
 ### Added
 - `src/db/schema.py` — SQLAlchemy table definitions (`cycles`, `trades`, `portfolio_state`, `reflections`)
@@ -29,7 +201,7 @@
 - `tests/test_reflection.py` — 8 tests for the reflection agent
 - `sqlalchemy>=2.0.0` and `apscheduler>=3.10.0` added to dependencies
 
-## Phase 2 — Agent Framework
+## v0 Phase 2 — Agent Framework
 
 ### Added
 - `src/models.py` — extended with all agent output models: `TechnicalAnalystOutput`, `SentimentAnalystOutput`, `FundamentalAnalystOutput`, `RiskManagerOutput`, `CouncilOutputs`, `DeliberationOutput`, `AgentWeights`
@@ -47,7 +219,7 @@
 - `prompts/deliberation_v1.txt` — system prompt for Deliberation Chair (includes consensus rules: all-3-agree ≥70% → full size; 2-of-3 ≥60% → 50% size; else HOLD)
 - `tests/test_agents.py` — 38 tests: `call_agent` base utility, individual agent schema validation, deliberation consensus logic, runner veto short-circuit, prompt file existence checks
 
-## Phase 1 — Data Pipeline + Tier-0 Validation
+## v0 Phase 1 — Data Pipeline + Tier-0 Validation
 
 ### Added
 - `src/models.py` — Pydantic v2 models for the full context schema: `PriceData`, `IndicatorData`, `NewsItem`, `SentimentData`, `OnchainData`, `PortfolioData`, `MarketContext`; literal types for `Direction`, `MACDSignal`, `BBPosition`, `Regime`, etc.

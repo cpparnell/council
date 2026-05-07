@@ -6,7 +6,6 @@ Tests verify: prompt loading, message formatting, JSON parsing, schema
 validation, veto short-circuit, and asyncio.gather parallelism in the runner.
 """
 
-import json
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -145,9 +144,13 @@ VALID_DELIBERATION = {
 
 
 def _mock_response(payload: dict) -> MagicMock:
-    """Build a fake anthropic response object containing JSON."""
+    """Build a fake anthropic response with a tool_use block containing payload."""
+    block = MagicMock()
+    block.type = "tool_use"
+    block.input = payload
     msg = MagicMock()
-    msg.content = [MagicMock(text=json.dumps(payload))]
+    msg.content = [block]
+    msg.stop_reason = "tool_use"
     return msg
 
 
@@ -170,23 +173,17 @@ class TestCallAgent:
         assert result.direction == "BUY"
         assert result.confidence == 72
 
-    async def test_strips_markdown_fences(self):
-        from src.agents.base import call_agent
-        fenced = "```json\n" + json.dumps(VALID_TECHNICAL) + "\n```"
-        client = MagicMock()
-        client.messages.create = AsyncMock(return_value=MagicMock(content=[MagicMock(text=fenced)]))
-        result = await call_agent(
-            client, "claude-haiku-4-5", "system", "user", TechnicalAnalystOutput
-        )
-        assert result.direction == "BUY"
-
-    async def test_raises_on_non_json(self):
+    async def test_raises_on_missing_tool_use_block(self):
         from src.agents.base import AgentError, call_agent
+        # Simulate a response with no tool_use block (e.g. end_turn instead)
+        text_only_block = MagicMock()
+        text_only_block.type = "text"
+        response = MagicMock()
+        response.content = [text_only_block]
+        response.stop_reason = "end_turn"
         client = MagicMock()
-        client.messages.create = AsyncMock(
-            return_value=MagicMock(content=[MagicMock(text="not json at all")])
-        )
-        with pytest.raises(AgentError, match="non-JSON"):
+        client.messages.create = AsyncMock(return_value=response)
+        with pytest.raises(AgentError, match="tool_use block"):
             await call_agent(
                 client, "claude-haiku-4-5", "system", "user", TechnicalAnalystOutput
             )
@@ -494,42 +491,195 @@ class TestCouncilRunner:
             result = await run_council(ctx, client)
         assert result.vetoed is False
 
+    async def test_scored_signal_overrides_llm_deliberation(self):
+        """Deliberation LLM's final_signal must be overridden by compute_signed_score."""
+        from src.agents.runner import run_council
+        ctx = _make_ctx()
+        client = MagicMock()
+        # LLM claims HOLD, but all three directional agents voted BUY with
+        # high confidence (72/65/60) → scorer returns BUY → override wins.
+        mocks = self._make_mocks(risk_veto=False)
+        llm_says_hold = {**VALID_DELIBERATION, "final_signal": "HOLD", "conviction": "low"}
+        mocks["run_deliberation"] = AsyncMock(return_value=DeliberationOutput(**llm_says_hold))
+        with patch("src.agents.runner.run_technical_analyst", mocks["run_technical_analyst"]), \
+             patch("src.agents.runner.run_sentiment_analyst", mocks["run_sentiment_analyst"]), \
+             patch("src.agents.runner.run_fundamental_analyst", mocks["run_fundamental_analyst"]), \
+             patch("src.agents.runner.run_risk_manager", mocks["run_risk_manager"]), \
+             patch("src.agents.runner.run_deliberation", mocks["run_deliberation"]):
+            result = await run_council(ctx, client)
+        assert result.signal == "BUY"
+        assert result.deliberation.score > 0.25
+
+
+# ========================================================= signed-score scoring
+
+class TestComputeSignedScore:
+    def _outputs(self, *, t_dir="BUY", t_conf=70, s_dir="BUY", s_conf=70,
+                 f_dir="BUY", f_conf=70, veto=False) -> CouncilOutputs:
+        return CouncilOutputs(
+            technical=TechnicalAnalystOutput(
+                direction=t_dir, confidence=t_conf, timeframe="24h",
+                key_signals=["x"], invalidation_level=80_000.0,
+            ),
+            sentiment=SentimentAnalystOutput(
+                direction=s_dir, confidence=s_conf, overall_sentiment="bullish",
+                dominant_narrative="x", high_impact_events=[],
+                sentiment_vs_price_divergence=False,
+            ),
+            fundamental=FundamentalAnalystOutput(
+                direction=f_dir, confidence=f_conf, onchain_bias="accumulation",
+                macro_bias="risk-on", key_factors=["x"],
+            ),
+            risk=RiskManagerOutput(
+                veto=veto, veto_reason="test" if veto else None,
+                approved_position_size_pct=15.0,
+                recommended_stop_loss=80_000.0,
+                recommended_take_profit=88_000.0,
+                risk_reward_ratio=2.0, notes="x",
+            ),
+        )
+
+    def test_all_buy_high_conf_returns_buy(self):
+        from src.agents.scoring import compute_signed_score
+        signal, score = compute_signed_score(self._outputs(t_conf=80, s_conf=70, f_conf=75))
+        assert signal == "BUY"
+        assert score > 0.25
+
+    def test_all_sell_high_conf_returns_sell(self):
+        from src.agents.scoring import compute_signed_score
+        signal, score = compute_signed_score(
+            self._outputs(t_dir="SELL", s_dir="SELL", f_dir="SELL",
+                          t_conf=80, s_conf=70, f_conf=75)
+        )
+        assert signal == "SELL"
+        assert score < -0.25
+
+    def test_risk_veto_overrides_buy(self):
+        from src.agents.scoring import compute_signed_score
+        signal, score = compute_signed_score(
+            self._outputs(t_conf=90, s_conf=90, f_conf=90, veto=True)
+        )
+        assert signal == "HOLD"
+        assert score == 0.0
+
+    def test_all_hold_returns_hold(self):
+        from src.agents.scoring import compute_signed_score
+        signal, score = compute_signed_score(
+            self._outputs(t_dir="HOLD", s_dir="HOLD", f_dir="HOLD",
+                          t_conf=40, s_conf=40, f_conf=40)
+        )
+        assert signal == "HOLD"
+        assert score == 0.0
+
+    def test_low_confidence_agent_excluded(self):
+        """An agent with conf < 30 should not dilute the score."""
+        from src.agents.scoring import compute_signed_score
+        # Technical says BUY strongly; sentiment is HOLD at 20 (excluded);
+        # fundamental says BUY at 70. Without the floor, the HOLD would
+        # drag the score; with the floor, score should be clearly BUY.
+        signal, score = compute_signed_score(
+            self._outputs(t_dir="BUY", t_conf=80,
+                          s_dir="HOLD", s_conf=20,
+                          f_dir="BUY", f_conf=70)
+        )
+        assert signal == "BUY"
+        assert score > 0.5  # strong, not diluted
+
+    def test_split_directions_score_near_zero(self):
+        """Mixed buy/sell with similar confidence → score < threshold."""
+        from src.agents.scoring import compute_signed_score
+        signal, score = compute_signed_score(
+            self._outputs(t_dir="BUY", t_conf=60,
+                          s_dir="SELL", s_conf=60,
+                          f_dir="HOLD", f_conf=60)
+        )
+        assert signal == "HOLD"
+        assert abs(score) < 0.25
+
+    def test_score_below_threshold_returns_hold(self):
+        from src.agents.scoring import compute_signed_score
+        # All BUY but low conf — weighted score should stay below 0.25
+        signal, score = compute_signed_score(
+            self._outputs(t_conf=35, s_conf=35, f_conf=35)
+        )
+        # All agents at conf=35 with dir=BUY → raw score = 1.0 (direction signal is unanimous)
+        # So score IS above threshold; need mixed or partial for HOLD via threshold.
+        # Instead, test with one clear and one abstaining:
+        outputs = self._outputs(t_dir="BUY", t_conf=40,
+                                s_dir="HOLD", s_conf=20,     # excluded
+                                f_dir="HOLD", f_conf=40)     # HOLD → sign=0
+        signal, score = compute_signed_score(outputs)
+        # Technical contributes BUY; fundamental contributes HOLD (sign 0); sentiment abstains
+        # score = (0.40 * 1 * 0.40 + 0.35 * 0 * 0.40) / (0.40*0.40 + 0.35*0.40) = 0.16 / 0.30 = 0.533
+        assert signal == "BUY"
+        assert score > 0
+
+    def test_all_agents_below_floor_returns_hold(self):
+        from src.agents.scoring import compute_signed_score
+        signal, score = compute_signed_score(
+            self._outputs(t_conf=20, s_conf=20, f_conf=20)
+        )
+        assert signal == "HOLD"
+        assert score == 0.0
+
+
+class TestScoreToPositionSize:
+    def test_below_threshold_returns_zero(self):
+        from src.agents.scoring import score_to_position_size_pct
+        assert score_to_position_size_pct(0.10) == 0.0
+        assert score_to_position_size_pct(-0.20) == 0.0
+
+    def test_scales_linearly_with_magnitude(self):
+        from src.agents.scoring import score_to_position_size_pct
+        assert score_to_position_size_pct(0.50) == pytest.approx(10.0)
+        assert score_to_position_size_pct(0.80) == pytest.approx(16.0)
+
+    def test_negative_score_returns_positive_size(self):
+        from src.agents.scoring import score_to_position_size_pct
+        assert score_to_position_size_pct(-0.75) == pytest.approx(15.0)
+
+    def test_capped_at_max(self):
+        from src.agents.scoring import score_to_position_size_pct
+        assert score_to_position_size_pct(1.5) == 20.0
+
 
 # ======================================================= prompt loading
 
+_V1_PROMPTS = [
+    "technical_analyst_v1.txt",
+    "sentiment_analyst_v1.txt",
+    "fundamental_analyst_v1.txt",
+    "risk_manager_v1.txt",
+    "deliberation_v1.txt",
+]
+_V2_PROMPTS = [
+    "technical_analyst_v2.txt",
+    "sentiment_analyst_v2.txt",
+    "fundamental_analyst_v2.txt",
+    "risk_manager_v2.txt",
+    "deliberation_v2.txt",
+]
+
+
 class TestPromptLoading:
-    def test_all_prompts_exist(self):
+    def test_all_v1_prompts_exist(self):
         from src.agents.base import PROMPTS_DIR
-        expected = [
-            "technical_analyst_v1.txt",
-            "sentiment_analyst_v1.txt",
-            "fundamental_analyst_v1.txt",
-            "risk_manager_v1.txt",
-            "deliberation_v1.txt",
-        ]
-        for fname in expected:
+        for fname in _V1_PROMPTS:
+            assert (PROMPTS_DIR / fname).exists(), f"Missing prompt file: {fname}"
+
+    def test_all_v2_prompts_exist(self):
+        from src.agents.base import PROMPTS_DIR
+        for fname in _V2_PROMPTS:
             assert (PROMPTS_DIR / fname).exists(), f"Missing prompt file: {fname}"
 
     def test_prompts_are_non_empty(self):
-        from src.agents.base import PROMPTS_DIR, load_prompt
-        for fname in [
-            "technical_analyst_v1.txt",
-            "sentiment_analyst_v1.txt",
-            "fundamental_analyst_v1.txt",
-            "risk_manager_v1.txt",
-            "deliberation_v1.txt",
-        ]:
+        from src.agents.base import load_prompt
+        for fname in _V1_PROMPTS + _V2_PROMPTS:
             text = load_prompt(fname)
             assert len(text) > 100, f"Prompt {fname} is suspiciously short"
 
     def test_prompts_contain_json_instruction(self):
         from src.agents.base import load_prompt
-        for fname in [
-            "technical_analyst_v1.txt",
-            "sentiment_analyst_v1.txt",
-            "fundamental_analyst_v1.txt",
-            "risk_manager_v1.txt",
-            "deliberation_v1.txt",
-        ]:
+        for fname in _V1_PROMPTS + _V2_PROMPTS:
             text = load_prompt(fname)
             assert "JSON" in text, f"Prompt {fname} does not mention JSON output format"

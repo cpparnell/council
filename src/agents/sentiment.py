@@ -8,7 +8,7 @@ from src.models import MarketContext, SentimentAnalystOutput
 # Spec assigns deepseek-v3 here; using claude-haiku-4-5 as a drop-in until
 # DeepSeek is wired up via their OpenAI-compatible API.
 MODEL = "claude-haiku-4-5"
-PROMPT_FILE = "sentiment_analyst_v1.txt"
+PROMPT_FILE = "sentiment_analyst_v2.txt"
 
 
 def _build_user_message(ctx: MarketContext) -> str:

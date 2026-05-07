@@ -1,0 +1,77 @@
+# Example strategy — shows every config option with comments.
+# Copy this file, rename it, edit the agents and prompts, and run:
+#   DRY_RUN=1 python -m src.main --strategy strategies/my_strategy.yaml
+#
+# To backtest:
+#   python -m src.backtest.engine --start 2023-01-01 --end 2024-01-01 \
+#       --strategy strategies/my_strategy.yaml
+name: "Example Momentum Strategy"
+version: "1"
+
+# agents — define one or more directional agents plus an optional veto agent.
+#
+# Each directional agent:
+#   name:     unique identifier used in logs and scoring
+#   model:    Anthropic model ID (claude-haiku-4-5 for speed/cost, claude-sonnet-4-6 for quality)
+#   prompt:   path to a .txt system prompt, relative to the project root
+#   weight:   contribution to the final score (0.0–1.0); all directional weights must sum to 1.0
+#   is_veto:  false (default) for directional agents
+#
+# At most ONE agent may have is_veto: true. That agent outputs {veto, veto_reason, reasoning}
+# instead of {direction, confidence, reasoning}. Use prompts/veto_agent_template.txt as a
+# starting point for a veto agent prompt.
+#
+# Directional agents use prompts/agent_template.txt as a starting point.
+agents:
+  - name: momentum
+    model: claude-haiku-4-5
+    prompt: prompts/agent_template.txt   # replace with your own prompt
+    weight: 0.50
+
+  - name: macro
+    model: claude-haiku-4-5
+    prompt: prompts/agent_template.txt   # replace with your own prompt
+    weight: 0.50
+
+  - name: risk_guard
+    model: claude-sonnet-4-6
+    prompt: prompts/veto_agent_template.txt
+    is_veto: true
+
+# deliberation — optional narrative synthesis agent.
+# When enabled, runs after directional agents and produces a plain-text summary.
+# The final signal is always determined by the scorer, not the deliberation agent.
+# Omit this section entirely to skip deliberation (purely deterministic scoring).
+deliberation:
+  enabled: true
+  model: claude-sonnet-4-6
+  prompt: prompts/deliberation_generic_v1.txt
+
+# scoring — controls how directional agent outputs become a final signal.
+scoring:
+  confidence_floor: 30    # agents below this confidence abstain from the weighted score
+  trade_threshold: 0.25   # |score| must exceed this to trade (0.0–1.0)
+
+# risk — stop-loss and take-profit rule applied to every BUY entry.
+#
+# stop_loss / take_profit:
+#   type: atr_multiple  →  price ± (value × ATR-14)
+#   type: fixed_pct     →  price × (1 ± value)   e.g. value: 0.05 = 5%
+#   type: none          →  no SL/TP placed
+#
+# max_position_pct: maximum portfolio % allocated to a single position
+risk:
+  stop_loss:
+    type: atr_multiple
+    value: 2.0
+  take_profit:
+    type: fixed_pct
+    value: 0.08       # 8% above entry
+  max_position_pct: 15.0
+
+# validation — Tier-0 hard-halt thresholds.
+# These override the hardcoded defaults in src/validation.py for this strategy.
+validation:
+  max_drawdown_pct: 12.0      # halt if portfolio is down more than 12% from peak
+  atr_spike_multiplier: 2.5   # halt if ATR-14 > 2.5× the 30-candle ATR average
+  min_news_count: 3           # soft warning only (does not halt the cycle)

@@ -119,8 +119,8 @@ def _make_result(signal: str = "BUY", veto: bool = False, rr: float = 2.1) -> Co
 class TestPlaceMarketBuy:
     def test_calls_exchange_and_returns_order(self):
         exchange = _mock_exchange()
-        order = place_market_buy(exchange, "BTC/USDT", 0.1)
-        exchange.create_market_buy_order.assert_called_once_with("BTC/USDT", 0.1)
+        order = place_market_buy(exchange, "BTC/USD", 0.1)
+        exchange.create_market_buy_order.assert_called_once_with("BTC/USD", 0.1)
         assert order["id"] == "buy-1"
 
     def test_retries_on_network_error(self):
@@ -131,7 +131,7 @@ class TestPlaceMarketBuy:
             {"id": "buy-retry", "average": 83500.0},
         ]
         with patch("src.execution.orders.time.sleep"):
-            order = place_market_buy(exchange, "BTC/USDT", 0.1)
+            order = place_market_buy(exchange, "BTC/USD", 0.1)
         assert order["id"] == "buy-retry"
         assert exchange.create_market_buy_order.call_count == 2
 
@@ -141,36 +141,36 @@ class TestPlaceMarketBuy:
         exchange.create_market_buy_order.side_effect = ccxt.NetworkError("timeout")
         with patch("src.execution.orders.time.sleep"):
             with pytest.raises(OrderError):
-                place_market_buy(exchange, "BTC/USDT", 0.1)
+                place_market_buy(exchange, "BTC/USD", 0.1)
 
     def test_raises_immediately_on_exchange_error(self):
         import ccxt
         exchange = MagicMock()
         exchange.create_market_buy_order.side_effect = ccxt.ExchangeError("insufficient balance")
         with pytest.raises(OrderError, match="Exchange error"):
-            place_market_buy(exchange, "BTC/USDT", 0.1)
+            place_market_buy(exchange, "BTC/USD", 0.1)
         assert exchange.create_market_buy_order.call_count == 1
 
 
 class TestPlaceMarketSell:
     def test_calls_exchange(self):
         exchange = _mock_exchange()
-        order = place_market_sell(exchange, "BTC/USDT", 0.05)
-        exchange.create_market_sell_order.assert_called_once_with("BTC/USDT", 0.05)
+        order = place_market_sell(exchange, "BTC/USD", 0.05)
+        exchange.create_market_sell_order.assert_called_once_with("BTC/USD", 0.05)
         assert order["id"] == "sell-1"
 
 
 class TestPlaceStopLoss:
     def test_places_stop_market(self):
         exchange = _mock_exchange()
-        order = place_stop_loss(exchange, "BTC/USDT", 0.1, 80200.0)
+        order = place_stop_loss(exchange, "BTC/USD", 0.1, 80200.0)
         assert order["id"] == "sl-1"
 
     def test_falls_back_to_stop_limit(self):
         exchange = MagicMock()
         with patch("src.execution.orders._retry") as mock_retry:
             mock_retry.side_effect = [OrderError("no stop_market"), {"id": "sl-limit"}]
-            order = place_stop_loss(exchange, "BTC/USDT", 0.1, 80200.0)
+            order = place_stop_loss(exchange, "BTC/USD", 0.1, 80200.0)
         assert order["id"] == "sl-limit"
 
 
@@ -204,7 +204,7 @@ class TestBuildPortfolioDict:
             )
             conn.execute(
                 trades_table.insert().values(
-                    cycle_id=1, symbol="BTC/USDT", side="BUY",
+                    cycle_id=1, symbol="BTC/USD", side="BUY",
                     entry_price=83500.0,
                     entry_time=datetime(2026, 4, 5, tzinfo=timezone.utc),
                     position_size_usd=1500.0, position_size_btc=0.018,
@@ -254,7 +254,7 @@ class TestRouteSignalBuy:
 
         # Pre-seed an open trade
         cycle_id = log_cycle(engine, ctx, result.outputs, result.deliberation)
-        open_trade(engine, cycle_id=cycle_id, symbol="BTC/USDT", side="BUY",
+        open_trade(engine, cycle_id=cycle_id, symbol="BTC/USD", side="BUY",
                    entry_price=83500.0, position_size_usd=1500.0, stop_loss=80200.0)
 
         route = route_signal(engine, exchange, ctx, result)
@@ -295,7 +295,7 @@ class TestRouteSignalSell:
         ctx = _make_ctx()
         result = _make_result("BUY")
         cycle_id = log_cycle(engine, ctx, result.outputs, result.deliberation)
-        trade_id = open_trade(engine, cycle_id=cycle_id, symbol="BTC/USDT", side="BUY",
+        trade_id = open_trade(engine, cycle_id=cycle_id, symbol="BTC/USD", side="BUY",
                                entry_price=entry_price, position_size_usd=1500.0,
                                stop_loss=80200.0, sl_order_id="sl-1")
         update_portfolio_state(engine, cash_usd=8500.0, peak_value=10000.0)
@@ -331,7 +331,7 @@ class TestRouteSignalSell:
         result = _make_result("SELL")
 
         route_signal(engine, exchange, ctx, result)
-        exchange.cancel_order.assert_called_once_with("sl-1", "BTC/USDT")
+        exchange.cancel_order.assert_called_once_with("sl-1", "BTC/USD")
 
     def test_sell_no_position_returns_hold(self, engine):
         update_portfolio_state(engine, cash_usd=10000.0, peak_value=10000.0)
@@ -371,7 +371,7 @@ class TestReconcile:
         ctx = _make_ctx()
         r = _make_result("BUY")
         cycle_id = log_cycle(engine, ctx, r.outputs, r.deliberation)
-        open_trade(engine, cycle_id=cycle_id, symbol="BTC/USDT", side="BUY",
+        open_trade(engine, cycle_id=cycle_id, symbol="BTC/USD", side="BUY",
                    entry_price=83500.0, position_size_usd=1500.0, stop_loss=80200.0)
 
         # Current price below stop
@@ -388,7 +388,7 @@ class TestReconcile:
         ctx = _make_ctx()
         r = _make_result("BUY")
         cycle_id = log_cycle(engine, ctx, r.outputs, r.deliberation)
-        open_trade(engine, cycle_id=cycle_id, symbol="BTC/USDT", side="BUY",
+        open_trade(engine, cycle_id=cycle_id, symbol="BTC/USD", side="BUY",
                    entry_price=83500.0, position_size_usd=1500.0, stop_loss=80200.0)
 
         exchange = _mock_exchange(current_price=84000.0)

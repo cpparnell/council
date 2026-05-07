@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # ----------------------------------------------------------------- Shared
 Direction = Literal["BUY", "SELL", "HOLD"]
@@ -62,6 +62,16 @@ class OnchainData(BaseModel):
     sopr: float
 
 
+class MacroData(BaseModel):
+    """Macro context (v2). DXY, VIX, SPX 20-session change, 10Y yield, and
+    a derived risk regime classifier."""
+    vix: float
+    dxy: float
+    spx_20d_change_pct: float
+    tnx_yield_pct: float          # ^TNX divided by 10 (e.g. 3.97, not 39.7)
+    macro_bias: MacroBias
+
+
 class PortfolioData(BaseModel):
     btc_position_usd: float
     cash_usd: float
@@ -78,6 +88,9 @@ class MarketContext(BaseModel):
     sentiment: SentimentData
     onchain: OnchainData
     portfolio: PortfolioData
+    # v2 additive: macro context. None in live mode until fetcher wired;
+    # populated by the backtest loop via src.data.macro.fetch_macro_for_date.
+    macro: MacroData | None = None
 
 
 # -------------------------------------------------------- Agent output models
@@ -116,6 +129,13 @@ class RiskManagerOutput(BaseModel):
     risk_reward_ratio: float
     notes: str
 
+    @field_validator("recommended_stop_loss", "recommended_take_profit", "risk_reward_ratio", mode="before")
+    @classmethod
+    def strip_commas(cls, v):
+        if isinstance(v, str):
+            return v.replace(",", "")
+        return v
+
 
 # --------------------------------------------------------- Deliberation model
 
@@ -139,3 +159,32 @@ class DeliberationOutput(BaseModel):
     consensus_summary: str
     key_disagreements: list[str]
     agent_weights_applied: AgentWeights
+    # Signed score in [-1, 1] from compute_signed_score. 0.0 when risk-vetoed
+    # or when this output was constructed without running the scorer.
+    score: float = 0.0
+
+
+# ------------------------------------------------- Generic strategy models (v3)
+
+class GenericAgentOutput(BaseModel):
+    direction: Direction
+    confidence: int = Field(ge=0, le=100)
+    reasoning: str
+
+
+class VetoAgentOutput(BaseModel):
+    veto: bool
+    veto_reason: str | None = None
+    reasoning: str
+
+
+class GenericCouncilOutputs(BaseModel):
+    """All agent outputs from a generic strategy run, keyed by agent name."""
+    directional: dict[str, GenericAgentOutput]
+    veto: VetoAgentOutput | None = None
+
+
+class GenericDeliberationOutput(BaseModel):
+    narrative: str
+    final_signal: Direction = "HOLD"
+    score: float = 0.0

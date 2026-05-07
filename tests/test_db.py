@@ -148,7 +148,7 @@ class TestOpenTrade:
     def test_creates_open_trade(self, engine, sample_ctx, sample_outputs, sample_deliberation):
         cycle_id = log_cycle(engine, sample_ctx, sample_outputs, sample_deliberation)
         trade_id = open_trade(
-            engine, cycle_id=cycle_id, symbol="BTC/USDT", side="BUY",
+            engine, cycle_id=cycle_id, symbol="BTC/USD", side="BUY",
             entry_price=83500.0, position_size_usd=1500.0,
             stop_loss=80200.0, take_profit=88000.0,
         )
@@ -162,7 +162,7 @@ class TestOpenTrade:
     def test_position_size_btc_computed(self, engine, sample_ctx, sample_outputs, sample_deliberation):
         cycle_id = log_cycle(engine, sample_ctx, sample_outputs, sample_deliberation)
         trade_id = open_trade(
-            engine, cycle_id=cycle_id, symbol="BTC/USDT", side="BUY",
+            engine, cycle_id=cycle_id, symbol="BTC/USD", side="BUY",
             entry_price=80000.0, position_size_usd=8000.0,
             stop_loss=75000.0,
         )
@@ -173,7 +173,7 @@ class TestOpenTrade:
 class TestCloseTrade:
     def _open(self, engine, cycle_id):
         return open_trade(
-            engine, cycle_id=cycle_id, symbol="BTC/USDT", side="BUY",
+            engine, cycle_id=cycle_id, symbol="BTC/USD", side="BUY",
             entry_price=80000.0, position_size_usd=8000.0,
             stop_loss=75000.0, take_profit=90000.0,
         )
@@ -211,7 +211,7 @@ class TestGetOpenTrade:
     def test_returns_open_trade(self, engine, sample_ctx, sample_outputs, sample_deliberation):
         cycle_id = log_cycle(engine, sample_ctx, sample_outputs, sample_deliberation)
         trade_id = open_trade(
-            engine, cycle_id=cycle_id, symbol="BTC/USDT", side="BUY",
+            engine, cycle_id=cycle_id, symbol="BTC/USD", side="BUY",
             entry_price=80000.0, position_size_usd=8000.0, stop_loss=75000.0,
         )
         found = get_open_trade(engine)
@@ -221,7 +221,7 @@ class TestGetOpenTrade:
     def test_returns_none_after_close(self, engine, sample_ctx, sample_outputs, sample_deliberation):
         cycle_id = log_cycle(engine, sample_ctx, sample_outputs, sample_deliberation)
         trade_id = open_trade(
-            engine, cycle_id=cycle_id, symbol="BTC/USDT", side="BUY",
+            engine, cycle_id=cycle_id, symbol="BTC/USD", side="BUY",
             entry_price=80000.0, position_size_usd=8000.0, stop_loss=75000.0,
         )
         close_trade(engine, trade_id, exit_price=85000.0)
@@ -256,7 +256,7 @@ class TestReflections:
     def test_save_and_retrieve(self, engine, sample_ctx, sample_outputs, sample_deliberation):
         cycle_id = log_cycle(engine, sample_ctx, sample_outputs, sample_deliberation)
         trade_id = open_trade(
-            engine, cycle_id=cycle_id, symbol="BTC/USDT", side="BUY",
+            engine, cycle_id=cycle_id, symbol="BTC/USD", side="BUY",
             entry_price=80000.0, position_size_usd=8000.0, stop_loss=75000.0,
         )
         ref_id = save_reflection(engine, trade_id, "Great trade, technical analyst was most accurate.")
