@@ -211,6 +211,8 @@ __marimo__/
 
 # Misc.
 NOTES.md
+CHANGELOG.md
 
 # Temporary files
 tmp/
+prompts/personal/

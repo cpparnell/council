@@ -1,5 +1,36 @@
 # Changelog
 
+## Feature — 2026-04-30 (v3: strategy framework — config-driven council)
+
+Implements `specs/v3.md` phases 1–6. Users can now define a complete trading strategy in a single YAML file without writing Python. Test suite: **305 → 344** passing.
+
+### Added
+- `src/strategies/config.py` — typed `StrategyConfig` Pydantic model: `AgentConfig` (name, model, prompt, weight, is_veto), `DeliberationConfig` (optional), `ScoringConfig` (confidence_floor, trade_threshold), `RiskRules` (stop_loss/take_profit SLTPRule + max_position_pct), `ValidationConfig` (max_drawdown_pct, atr_spike_multiplier, min_news_count); `model_validator` enforces weight-sum=1.0 and at-most-one veto agent
+- `src/strategies/loader.py` — `load_strategy(path)`: loads YAML, validates schema, and checks all prompt files exist on disk; prompt paths are resolved relative to project root
+- `src/strategies/context.py` — `render_context_block(ctx)`: renders the full `MarketContext` as a structured text block (PRICE / INDICATORS / NEWS / SENTIMENT / ON-CHAIN / MACRO / PORTFOLIO sections); single shared input for all agents in a generic run
+- `src/strategies/runner.py` — `run_strategy_council(ctx, config, client)`: config-driven generic runner; runs all agents in parallel; short-circuits to HOLD on veto; calls `compute_generic_score`; optionally runs deliberation; computes SL/TP via `compute_sl_tp`; returns `GenericCouncilResult`
+- `src/strategies/scoring.py` — `compute_generic_score(outputs, config)`: config-driven confidence-weighted signed-score; weights normalised at call time; confidence_floor and trade_threshold sourced from `ScoringConfig`; `score_to_position_size_pct(score, config)` scales size from |score|
+- `src/strategies/risk_rules.py` — `compute_sl_tp(rules, ctx, entry_price)`: computes SL/TP prices from `RiskRules`; supports `atr_multiple` (price ± N×ATR-14), `fixed_pct` (price × (1 ± pct)), and `none` (0.0, 0.0); SL clamped > 0
+- `strategies/default.yaml` — current v2 council expressed as a strategy file (technical 0.40 / sentiment 0.25 / fundamental 0.35 / risk veto; deliberation enabled; scoring thresholds and validation thresholds matching current hardcoded constants)
+- `strategies/example.yaml` — fully-commented example strategy (`momentum` + `macro` + `risk_guard` veto); shows every config option
+- `prompts/deliberation_generic_v1.txt` — built-in deliberation prompt for generic runs; requests a 2–4 sentence narrative synthesis
+- `prompts/agent_template.txt` — starting-point prompt for directional agents with annotated output schema and confidence calibration guide
+- `prompts/veto_agent_template.txt` — starting-point prompt for veto agents with `VetoAgentOutput` schema guidance
+- `prompts/risk_manager_veto_v1.txt` — purpose-built veto prompt for `default.yaml`'s risk agent (cleaner than repurposing `risk_manager_v2.txt`)
+- `tests/test_strategy_loader.py` (12 tests) — valid configs, weight validation, veto count, missing fields, missing prompt files, `default.yaml` and `example.yaml` smoke loads
+- `tests/test_strategy_scoring.py` (16 tests) — all directions, confidence floor exclusion, threshold gating, weighted score formula, SL/TP for all three rule types
+- `tests/test_strategy_runner.py` (8 tests) — BUY/HOLD/SELL signals, veto short-circuit, veto=false passthrough, SL/TP on result, conviction derivation, deliberation failure non-fatal, no-veto-agent skips veto call
+- `tests/test_strategy_parity.py` (3 tests) — BUY/HOLD/veto scenarios confirm generic and legacy scorers agree on identical inputs
+
+### Changed
+- `src/models.py` — added `GenericAgentOutput`, `VetoAgentOutput`, `GenericCouncilOutputs`, `GenericDeliberationOutput` (additive; all existing models unchanged)
+- `src/validation.py` — `check_drawdown_halt` and `check_volatility_halt` now accept `max_drawdown_pct` and `atr_spike_multiplier` params (backward-compatible defaults match previous constants); `validate_context` accepts both params and passes them through
+- `src/data/assembler.py` — `assemble_context` accepts `max_drawdown_pct` and `atr_spike_multiplier` params and passes them to `validate_context`
+- `src/main.py` — added `--strategy PATH` CLI argument; when provided, calls `run_strategy_council` instead of legacy `run_council`; validation params derived from strategy config
+- `src/backtest/signals.py` — `generate_signals` accepts `strategy_config` param; routes to generic runner when provided; agent logs written per-agent-name for generic runs
+- `src/backtest/engine.py` — `run_backtest` accepts `strategy_config` param; `_parse_args` adds `--strategy PATH`
+- `pyproject.toml` — added `pyyaml>=6.0` as explicit dependency (was transitively available; now declared)
+
 ## Bugfix — 2026-04-27 (risk manager stop-loss above entry price)
 
 ### Fixed

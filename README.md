@@ -1,31 +1,37 @@
 # Council — BTC LLM Trading Bot
 
-A Bitcoin swing trading bot that uses a council of specialised LLM agents to generate daily BUY/SELL/HOLD signals and execute them against Binance testnet (paper) or mainnet (live).
+A Bitcoin swing trading framework built around a **council of LLM agents** that vote on daily BUY/SELL/HOLD signals. Fully configurable — define your own agents, weights, and risk rules in a single YAML file without writing code.
 
 ## Architecture
 
 ```
-Data Pipeline (CCXT/Kraken, CryptoPanic, Alternative.me, Glassnode)
+strategy.yaml  (agents, weights, SL/TP rules, validation thresholds)
+    │
+    ▼
+Data Pipeline (CCXT/Kraken, GDELT news, Alternative.me, CoinMetrics, yfinance)
     │
     ▼
 Tier-0 Validation (price freshness, news count, drawdown halt, ATR halt)
+    │                          ↑ thresholds from strategy.yaml
+    ▼
+Generic Council Runner — agents defined in strategy.yaml, run in parallel
+    ├── Directional agents  (any number, any model, user-defined prompts)
+    └── Veto agent          (optional; forces HOLD if veto=true)
     │
     ▼
-Council of LLMs (parallel)
-    ├── Technical Analyst  (claude-haiku-4-5)
-    ├── Sentiment Analyst  (claude-haiku-4-5)
-    ├── Fundamental Analyst (claude-haiku-4-5)
-    └── Risk Manager       (claude-sonnet-4-6)
+Deterministic Scorer (confidence-weighted signed-score from strategy weights)
     │
     ▼
-Deliberation / Chair (claude-sonnet-4-6) → BUY / SELL / HOLD
+Optional Deliberation (narrative synthesis, claude-sonnet-4-6) → BUY / SELL / HOLD
     │
     ▼
-Execution Layer (Binance testnet/mainnet) + SQLite Logging
+Execution Layer (Kraken paper/live) + SQLite Logging
     │
     ├── Reflection Loop (post-trade analysis, claude-sonnet-4-6)
     └── Weekly Summary  (performance review, claude-sonnet-4-6)
 ```
+
+The default strategy (`strategies/default.yaml`) reproduces the original v2 council: Technical (40%) + Sentiment (25%) + Fundamental (35%) + Risk veto.
 
 ## Setup
 
@@ -35,14 +41,56 @@ pip install -e ".[dev]"
 cp .env.example .env   # fill in ANTHROPIC_API_KEY at minimum
 ```
 
+## Custom Strategies (v3)
+
+Define a strategy as a YAML file — no Python required.
+
+```yaml
+# strategies/my_strategy.yaml
+name: "My Momentum Strategy"
+agents:
+  - name: trend
+    model: claude-haiku-4-5
+    prompt: prompts/agent_template.txt   # copy & customise
+    weight: 0.60
+  - name: macro
+    model: claude-haiku-4-5
+    prompt: prompts/agent_template.txt
+    weight: 0.40
+  - name: risk_guard
+    model: claude-sonnet-4-6
+    prompt: prompts/veto_agent_template.txt
+    is_veto: true
+scoring:
+  confidence_floor: 30
+  trade_threshold: 0.25
+risk:
+  stop_loss:
+    type: atr_multiple
+    value: 2.0
+  take_profit:
+    type: fixed_pct
+    value: 0.08
+  max_position_pct: 15.0
+validation:
+  max_drawdown_pct: 12.0
+  atr_spike_multiplier: 2.5
+```
+
+Start from `strategies/example.yaml` (fully commented) and `prompts/agent_template.txt` / `prompts/veto_agent_template.txt`.
+
 ## Running
 
 ```bash
-# One-shot cycle (run once and exit)
+# One-shot cycle — default v2 council
 python -m src.main
+
+# One-shot cycle — custom strategy
+python -m src.main --strategy strategies/my_strategy.yaml
 
 # Dry run (logs council decision, no orders placed)
 DRY_RUN=1 python -m src.main
+DRY_RUN=1 python -m src.main --strategy strategies/my_strategy.yaml
 
 # Daily scheduler (00:05 UTC) + weekly summary (Sunday 08:00 UTC)
 python -m src.main --schedule
@@ -56,13 +104,20 @@ python -m src.main --weekly
 Run the LLM council against historical BTC data without executing real orders:
 
 ```bash
-# Backtest over 2024 (requires ANTHROPIC_API_KEY only — no Binance credentials needed)
+# Backtest over 2024 — default council
 python -m src.backtest.engine \
     --start 2024-01-01 \
     --end   2025-01-01 \
     --capital 250000
 
-# Shorter date range for a quick smoke test
+# Backtest with a custom strategy
+python -m src.backtest.engine \
+    --start 2023-01-01 \
+    --end   2024-01-01 \
+    --capital 250000 \
+    --strategy strategies/my_strategy.yaml
+
+# Quick smoke test
 python -m src.backtest.engine \
     --start 2024-06-01 \
     --end   2024-09-01 \
@@ -83,13 +138,17 @@ Output includes Return%, Sharpe, Max Drawdown, Win Rate, Avg Trade, and Expectan
 ## Testing
 
 ```bash
-pytest -v                                    # all 235 tests
+pytest -v                                    # all 344 tests
 pytest tests/test_db.py -v                  # DB layer
 pytest tests/test_execution.py -v           # execution + router
 pytest tests/test_reporting.py -v           # metrics + weekly summary
 pytest tests/test_agents.py -v              # agent framework
 pytest tests/test_backtest.py -v            # backtesting module
 pytest tests/test_agents.py::test_run_council_hold_on_veto -v  # single test
+pytest tests/test_strategy_loader.py -v     # strategy YAML loader
+pytest tests/test_strategy_scoring.py -v   # generic scoring + SL/TP rules
+pytest tests/test_strategy_runner.py -v    # generic council runner
+pytest tests/test_strategy_parity.py -v    # legacy vs generic scorer parity
 ```
 
 ## Environment Variables
@@ -108,38 +167,3 @@ pytest tests/test_agents.py::test_run_council_hold_on_veto -v  # single test
 | `LUNARCRUSH_API_KEY` | No | — | Sentiment (falls back to Fear/Greed proxy) |
 | `GLASSNODE_API_KEY` | No | — | On-chain data (falls back to zeros) |
 
-## Development Phases
-
-### v0 — Live Trading Bot
-- **Phase 1** ✅ Data pipeline + Tier-0 validation
-- **Phase 2** ✅ Agent framework (4 agents + deliberation)
-- **Phase 3** ✅ Execution layer + SQLite logging + reflection loop
-- **Phase 4** ✅ Performance metrics + weekly summary agent
-- **Phase 5** ✅ Exchange migration: Binance → Kraken (US-accessible, free)
-- **Phase 6** Paper trading (60 days minimum, DRY_RUN=1)
-- **Phase 7** Live deployment (≤ $500 initial capital, Kraken mainnet)
-
-### v1 — Backtesting
-- **Phase 1** ✅ Patch data layer (override params, `skip_freshness`)
-- **Phase 2** ✅ Historical data module (`fetch_full_ohlcv`, `slice_ohlcv`, sentiment history)
-- **Phase 3** ✅ Async signal generation loop (`generate_signals`, `_PortfolioTracker`)
-- **Phase 4** ✅ `backtesting.py` strategy + CLI runner (`run_backtest`)
-- **Phase 5** ✅ Exchange migration: Binance → Kraken
-- **Phase 6** ✅ Historical data source: Kraken OHLCV → Yahoo Finance (yfinance; unlimited history)
-
-### v2 — Agent Enhancement (spec/v2.md)
-- **Phase 1** ✅ Historical news via GDELT DOC 2.0 (`src/data/news_historical.py`) — replaces NEUTRAL_NEWS_STUB with real dated headlines filtered to an allowlist (Reuters / Bloomberg / CoinDesk / WSJ / FT / CoinTelegraph / etc.), 24h publish-lag cutoff, disk-cached under `tmp/cache/gdelt/`
-- **Phase 2** ✅ Historical on-chain via CoinMetrics Community (`src/data/onchain_historical.py`) — replaces NEUTRAL_ONCHAIN_STUB with MVRV (as SOPR proxy), transfer-volume trend (as net-flow proxy), and activity-intensity (as whale proxy)
-- **Phase 2.5** ✅ Decision-logic rework (`src/agents/scoring.py`) — replaces v1's hard 60/70 thresholds with a confidence-weighted signed-score; deliberation LLM writes narrative, Python computes the final signal deterministically; risk-veto still overrides
-- **Phase 3** ✅ Macro context via yfinance (`src/data/macro.py`) — DXY / VIX / SPX / ^TNX bundle with derived risk-on / risk-off / neutral classifier, wired through the fundamental agent
-- **Phase 4** ✅ v2 prompts (`prompts/*_v2.txt`) — directional agents retuned to use the full 0–100 confidence range and be more assertive in clear regimes; deliberation refocused on narrative; v1 prompts kept in-tree for reproducibility
-- **Phase 5** Pending — tuning sweep on 2022 window, holdout backtest Jan–Aug 2023
-
-## Success Targets (Phase 5 evaluation)
-
-| Metric | Target |
-|---|---|
-| Sharpe ratio | ≥ 1.5 |
-| Max drawdown | < 20% |
-| Expectancy | Positive |
-| Council consistency | ≥ 40% unanimous cycles |

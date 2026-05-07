@@ -162,3 +162,29 @@ class DeliberationOutput(BaseModel):
     # Signed score in [-1, 1] from compute_signed_score. 0.0 when risk-vetoed
     # or when this output was constructed without running the scorer.
     score: float = 0.0
+
+
+# ------------------------------------------------- Generic strategy models (v3)
+
+class GenericAgentOutput(BaseModel):
+    direction: Direction
+    confidence: int = Field(ge=0, le=100)
+    reasoning: str
+
+
+class VetoAgentOutput(BaseModel):
+    veto: bool
+    veto_reason: str | None = None
+    reasoning: str
+
+
+class GenericCouncilOutputs(BaseModel):
+    """All agent outputs from a generic strategy run, keyed by agent name."""
+    directional: dict[str, GenericAgentOutput]
+    veto: VetoAgentOutput | None = None
+
+
+class GenericDeliberationOutput(BaseModel):
+    narrative: str
+    final_signal: Direction = "HOLD"
+    score: float = 0.0

@@ -17,7 +17,7 @@ import asyncio
 import logging
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -133,6 +133,7 @@ async def run_backtest(
     client=None,
     save_signals_csv: bool = True,
     run_dir: Path | None = None,
+    strategy_config=None,
 ) -> dict:
     """Run a full LLM council backtest over the specified date range.
 
@@ -153,8 +154,11 @@ async def run_backtest(
     Returns:
         A dict of formatted backtest statistics.
     """
+    # Fetch 250 extra days of history before start_date so slice_ohlcv has
+    # enough candles to compute indicators on the very first cycle.
+    fetch_start = start_date - timedelta(days=250)
     logger.info("Fetching OHLCV history %s → %s", start_date.date(), end_date.date())
-    full_ohlcv = fetch_full_ohlcv(start_date, end_date)
+    full_ohlcv = fetch_full_ohlcv(fetch_start, end_date)
 
     logger.info("Fetching historical Fear & Greed sentiment")
     sentiment_history = fetch_historical_sentiment()
@@ -168,7 +172,10 @@ async def run_backtest(
 
     agent_log_dir = run_dir / "agents" if run_dir else None
 
-    logger.info("Generating signals (LLM council)…")
+    if strategy_config is not None:
+        logger.info("Generating signals using strategy: %s", strategy_config.name)
+    else:
+        logger.info("Generating signals (LLM council)…")
     signals_df = await generate_signals(
         full_ohlcv=full_ohlcv,
         sentiment_history=sentiment_history,
@@ -178,6 +185,7 @@ async def run_backtest(
         client=client,
         csv_path=csv_path,
         agent_log_dir=agent_log_dir,
+        strategy_config=strategy_config,
     )
 
     if signals_df.empty:
@@ -258,12 +266,28 @@ def _parse_args(argv=None):
         "--no-save-csv", dest="save_csv", action="store_false", default=True,
         help="Skip saving the signals CSV",
     )
+    parser.add_argument(
+        "--strategy", metavar="PATH", default=None,
+        help=(
+            "Path to a strategy YAML file (e.g. strategies/default.yaml). "
+            "When provided, uses the generic strategy runner instead of the "
+            "legacy hardcoded council."
+        ),
+    )
     return parser.parse_args(argv)
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     args = _parse_args()
+
+    strategy_config = None
+    if args.strategy:
+        from src.strategies.loader import load_strategy
+        strategy_config = load_strategy(args.strategy)
+        logging.getLogger(__name__).info(
+            "Loaded strategy: %s (v%s)", strategy_config.name, strategy_config.version
+        )
 
     run_dir, _log_fh = _setup_run_dir()
     logger.info("Run output directory: %s", run_dir)
@@ -278,6 +302,7 @@ if __name__ == "__main__":
             initial_capital=args.capital,
             save_signals_csv=args.save_csv,
             run_dir=run_dir,
+            strategy_config=strategy_config,
         )
     )
     _print_results(result)

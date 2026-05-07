@@ -156,6 +156,7 @@ async def generate_signals(
     client=None,
     csv_path: Path | None = None,
     agent_log_dir: Path | None = None,
+    strategy_config=None,
 ) -> pd.DataFrame:
     """Run the LLM council for each trading day and return a signals DataFrame.
 
@@ -228,6 +229,20 @@ async def generate_signals(
                 # The last row of the slice is the "today" candle the agents see
                 today_row = ohlcv_slice.iloc[-1]
 
+                # Derive validation thresholds from strategy config when provided
+                _max_dd = (
+                    strategy_config.validation.max_drawdown_pct / 100
+                    if strategy_config else 0.15
+                )
+                _atr_mult = (
+                    strategy_config.validation.atr_spike_multiplier
+                    if strategy_config else 2.0
+                )
+                _min_news = (
+                    strategy_config.validation.min_news_count
+                    if strategy_config else _NEWS_MIN_ITEMS
+                )
+
                 # 4. Assemble context — inject all historical data, skip live fetches
                 ctx = await assemble_context(
                     exchange=None,
@@ -238,30 +253,50 @@ async def generate_signals(
                     onchain_override=onchain_data,
                     macro_override=macro_data,
                     skip_freshness=True,
-                    min_news_items=_NEWS_MIN_ITEMS,
+                    min_news_items=_min_news,
+                    max_drawdown_pct=_max_dd,
+                    atr_spike_multiplier=_atr_mult,
                 )
 
-                # 5. Run council
-                result = await run_council(ctx, client=client)
-
-                signal = result.signal
-                conviction = result.deliberation.conviction
-                vetoed = result.vetoed
-                # v2 position size = score-derived sizing, capped by risk manager's
-                # portfolio-risk approval. Risk veto is already reflected in signal=HOLD.
-                score_size = score_to_position_size_pct(result.deliberation.score)
-                size_pct = min(score_size, result.outputs.risk.approved_position_size_pct)
+                # 5. Run council — generic runner when strategy provided, legacy otherwise
                 close_price = float(ohlcv_slice.iloc[-1]["close"])
-                sl_price = result.outputs.risk.recommended_stop_loss
-                tp_price = result.outputs.risk.recommended_take_profit
-                # Store as ratios relative to close so they work at any price scale
-                sl_pct = (sl_price / close_price) if close_price > 0 and sl_price > 0 else 0.0
-                tp_pct = (tp_price / close_price) if close_price > 0 and tp_price > 0 else 0.0
-                # Sanity-check: stop must be below entry (sl_pct < 1) and
-                # target must be above entry (tp_pct > 1) for a long position.
-                sl_pct, tp_pct = _sanitize_stop_levels(
-                    close_price, sl_pct, tp_pct, indicator_data["atr_14"]
-                )
+                if strategy_config is not None:
+                    from src.strategies.runner import run_strategy_council
+                    from src.strategies.scoring import score_to_position_size_pct as _generic_size
+                    generic_result = await run_strategy_council(ctx, strategy_config, client=client)
+                    signal = generic_result.signal
+                    conviction = generic_result.conviction
+                    vetoed = generic_result.vetoed
+                    size_pct = generic_result.size_pct
+                    # Generic runner returns absolute prices; convert to ratios
+                    sl_price_abs = generic_result.sl_price
+                    tp_price_abs = generic_result.tp_price
+                    sl_pct = (sl_price_abs / close_price) if close_price > 0 and sl_price_abs > 0 else 0.0
+                    tp_pct = (tp_price_abs / close_price) if close_price > 0 and tp_price_abs > 0 else 0.0
+                    sl_pct, tp_pct = _sanitize_stop_levels(
+                        close_price, sl_pct, tp_pct, indicator_data["atr_14"]
+                    )
+                    score = generic_result.score
+                else:
+                    result = await run_council(ctx, client=client)
+                    signal = result.signal
+                    conviction = result.deliberation.conviction
+                    vetoed = result.vetoed
+                    # v2 position size = score-derived sizing, capped by risk manager's
+                    # portfolio-risk approval. Risk veto is already reflected in signal=HOLD.
+                    score_size = score_to_position_size_pct(result.deliberation.score)
+                    size_pct = min(score_size, result.outputs.risk.approved_position_size_pct)
+                    sl_price = result.outputs.risk.recommended_stop_loss
+                    tp_price = result.outputs.risk.recommended_take_profit
+                    # Store as ratios relative to close so they work at any price scale
+                    sl_pct = (sl_price / close_price) if close_price > 0 and sl_price > 0 else 0.0
+                    tp_pct = (tp_price / close_price) if close_price > 0 and tp_price > 0 else 0.0
+                    # Sanity-check: stop must be below entry (sl_pct < 1) and
+                    # target must be above entry (tp_pct > 1) for a long position.
+                    sl_pct, tp_pct = _sanitize_stop_levels(
+                        close_price, sl_pct, tp_pct, indicator_data["atr_14"]
+                    )
+                    score = result.deliberation.score
 
                 logger.info(
                     "Cycle %s: signal=%s conviction=%s vetoed=%s",
@@ -270,13 +305,24 @@ async def generate_signals(
 
                 if agent_log_dir is not None:
                     agent_log_dir.mkdir(parents=True, exist_ok=True)
-                    _append_agent_log(agent_log_dir / "technical_analyst.json", date_str, result.outputs.technical.model_dump())
-                    _append_agent_log(agent_log_dir / "sentiment_analyst.json", date_str, result.outputs.sentiment.model_dump())
-                    _append_agent_log(agent_log_dir / "fundamental_analyst.json", date_str, result.outputs.fundamental.model_dump())
-                    _append_agent_log(agent_log_dir / "risk_manager.json", date_str, result.outputs.risk.model_dump())
-                    _append_agent_log(agent_log_dir / "deliberation.json", date_str, result.deliberation.model_dump())
-
-                score = result.deliberation.score
+                    if strategy_config is not None:
+                        # Generic runner: log each agent's output by name
+                        for agent_name, agent_out in generic_result.outputs.directional.items():
+                            _append_agent_log(
+                                agent_log_dir / f"{agent_name}.json",
+                                date_str, agent_out.model_dump(),
+                            )
+                        if generic_result.outputs.veto:
+                            _append_agent_log(
+                                agent_log_dir / "veto_agent.json",
+                                date_str, generic_result.outputs.veto.model_dump(),
+                            )
+                    else:
+                        _append_agent_log(agent_log_dir / "technical_analyst.json", date_str, result.outputs.technical.model_dump())
+                        _append_agent_log(agent_log_dir / "sentiment_analyst.json", date_str, result.outputs.sentiment.model_dump())
+                        _append_agent_log(agent_log_dir / "fundamental_analyst.json", date_str, result.outputs.fundamental.model_dump())
+                        _append_agent_log(agent_log_dir / "risk_manager.json", date_str, result.outputs.risk.model_dump())
+                        _append_agent_log(agent_log_dir / "deliberation.json", date_str, result.deliberation.model_dump())
 
             except (AgentError, ValueError) as exc:
                 logger.warning("Cycle %s failed (%s: %s); recording HOLD.", date_str, type(exc).__name__, exc)

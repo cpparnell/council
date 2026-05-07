@@ -43,6 +43,7 @@ from src.db.store import save_reflection
 from src.execution.router import reconcile_open_position, route_signal
 from src.execution.state import build_portfolio_dict
 from src.models import CouncilOutputs, DeliberationOutput
+from src.strategies.config import StrategyConfig
 
 logging.basicConfig(
     level=logging.INFO,
@@ -83,7 +84,7 @@ async def _do_weekly() -> None:
     print(summary)
 
 
-async def run_cycle() -> None:
+async def run_cycle(strategy: StrategyConfig | None = None) -> None:
     """Execute one full trading cycle end-to-end."""
     engine = get_engine()
     create_all(engine)
@@ -110,8 +111,19 @@ async def run_cycle() -> None:
         portfolio["current_drawdown_pct"] * 100,
     )
 
+    # Validation params — use strategy config if provided, else defaults
+    max_drawdown_pct = strategy.validation.max_drawdown_pct / 100 if strategy else 0.15
+    atr_spike_multiplier = strategy.validation.atr_spike_multiplier if strategy else 2.0
+    min_news_items = strategy.validation.min_news_count if strategy else 10
+
     try:
-        ctx = await assemble_context(exchange=exchange, portfolio=portfolio)
+        ctx = await assemble_context(
+            exchange=exchange,
+            portfolio=portfolio,
+            max_drawdown_pct=max_drawdown_pct,
+            atr_spike_multiplier=atr_spike_multiplier,
+            min_news_items=min_news_items,
+        )
     except Exception as exc:
         logger.error("Context assembly failed: %s — defaulting to HOLD", exc)
         return
@@ -119,21 +131,34 @@ async def run_cycle() -> None:
     # ── Run the council ───────────────────────────────────────────────────
     logger.info("Running council for %s @ %.2f USD", ctx.asset, ctx.price.current)
     try:
-        result = await run_council(ctx, client=anthropic_client)
+        if strategy:
+            from src.strategies.runner import run_strategy_council
+            result = await run_strategy_council(ctx, strategy, client=anthropic_client)
+            _log_generic_result(result)
+        else:
+            result = await run_council(ctx, client=anthropic_client)
+            logger.info(
+                "Council decision: %s (conviction=%s, vetoed=%s)",
+                result.signal, result.deliberation.conviction, result.vetoed,
+            )
     except Exception as exc:
         logger.error("Council failed: %s — defaulting to HOLD", exc)
         return
 
-    logger.info(
-        "Council decision: %s (conviction=%s, vetoed=%s)",
-        result.signal, result.deliberation.conviction, result.vetoed,
-    )
-
     # ── Route signal → orders ────────────────────────────────────────────
     if DRY_RUN:
         logger.info("[DRY RUN] Would route signal=%s — skipping order execution", result.signal)
-        from src.db.store import log_cycle
-        log_cycle(engine, ctx, result.outputs, result.deliberation)
+        if not strategy:
+            from src.db.store import log_cycle
+            log_cycle(engine, ctx, result.outputs, result.deliberation)
+        return
+
+    if strategy:
+        logger.info(
+            "[STRATEGY] Routing generic result signal=%s — "
+            "execution layer integration is pending (no DB logging for generic runs)",
+            result.signal,
+        )
         return
 
     route = route_signal(engine, exchange, ctx, result)
@@ -143,6 +168,15 @@ async def run_cycle() -> None:
     # ── Reflection for closed trades ──────────────────────────────────────
     if route.closed_trade:
         await _run_reflection_for_trade(engine, route.closed_trade, anthropic_client)
+
+
+def _log_generic_result(result) -> None:
+    logger.info(
+        "Council decision: %s (score=%.3f conviction=%s vetoed=%s)",
+        result.signal, result.score, result.conviction, result.vetoed,
+    )
+    if result.narrative:
+        logger.info("Narrative: %s", result.narrative)
 
 
 async def _run_reflection_for_trade(
@@ -193,7 +227,23 @@ def main() -> None:
         action="store_true",
         help="Run the weekly summary report and exit",
     )
+    parser.add_argument(
+        "--strategy",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Path to a strategy YAML file (e.g. strategies/default.yaml). "
+            "When provided, uses the generic strategy runner instead of the "
+            "legacy hardcoded council."
+        ),
+    )
     args = parser.parse_args()
+
+    strategy: StrategyConfig | None = None
+    if args.strategy:
+        from src.strategies.loader import load_strategy
+        strategy = load_strategy(args.strategy)
+        logger.info("Loaded strategy: %s (v%s)", strategy.name, strategy.version)
 
     if args.weekly:
         asyncio.run(_do_weekly())
@@ -209,7 +259,7 @@ def main() -> None:
 
         scheduler = BlockingScheduler(timezone="UTC")
         scheduler.add_job(
-            lambda: asyncio.run(run_cycle()),
+            lambda: asyncio.run(run_cycle(strategy=strategy)),
             CronTrigger(hour=0, minute=5),
             id="council_daily",
             name="Council daily cycle",
@@ -231,7 +281,7 @@ def main() -> None:
         except KeyboardInterrupt:
             logger.info("Scheduler stopped.")
     else:
-        asyncio.run(run_cycle())
+        asyncio.run(run_cycle(strategy=strategy))
 
 
 if __name__ == "__main__":

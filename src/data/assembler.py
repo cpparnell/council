@@ -32,7 +32,7 @@ from src.models import (
     PriceData,
     SentimentData,
 )
-from src.validation import ValidationError, validate_context
+from src.validation import MAX_ATR_MULTIPLIER, MAX_DRAWDOWN_HALT_PCT, ValidationError, validate_context
 
 
 async def assemble_context(
@@ -45,6 +45,8 @@ async def assemble_context(
     macro_override: MacroData | None = None,
     skip_freshness: bool = False,
     min_news_items: int = 10,
+    max_drawdown_pct: float = MAX_DRAWDOWN_HALT_PCT,
+    atr_spike_multiplier: float = MAX_ATR_MULTIPLIER,
 ) -> MarketContext:
     """Assemble the full context object for one council cycle.
 
@@ -113,5 +115,11 @@ async def assemble_context(
         macro=macro_override,
     )
 
-    validate_context(ctx, skip_freshness=skip_freshness, min_news_items=min_news_items)
+    validate_context(
+        ctx,
+        skip_freshness=skip_freshness,
+        min_news_items=min_news_items,
+        max_drawdown_pct=max_drawdown_pct,
+        atr_spike_multiplier=atr_spike_multiplier,
+    )
     return ctx
