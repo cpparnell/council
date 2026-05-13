@@ -8,7 +8,7 @@ from src.agents.base import call_agent, load_prompt
 from src.models import CouncilOutputs, DeliberationOutput
 
 MODEL = "claude-sonnet-4-6"
-PROMPT_FILE = "deliberation_v2.txt"
+PROMPT_FILE = "default/deliberation.txt"
 
 
 def _build_user_message(outputs: CouncilOutputs) -> str:

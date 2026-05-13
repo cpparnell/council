@@ -485,7 +485,7 @@ class TestRunWeeklySummary:
 
     async def test_prompt_file_loads(self, engine):
         from src.agents.base import load_prompt
-        prompt = load_prompt("weekly_summary_v1.txt")
+        prompt = load_prompt("personal/weekly_summary_v1.txt")
         assert len(prompt) > 100
 
 

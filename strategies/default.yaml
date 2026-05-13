@@ -6,28 +6,28 @@ version: "2"
 agents:
   - name: technical
     model: claude-haiku-4-5
-    prompt: prompts/personal/technical_analyst_v2.txt
+    prompt: prompts/default/technical_analyst.txt
     weight: 0.40
 
   - name: sentiment
     model: claude-haiku-4-5
-    prompt: prompts/personal/sentiment_analyst_v2.txt
+    prompt: prompts/default/sentiment_analyst.txt
     weight: 0.25
 
   - name: fundamental
     model: claude-haiku-4-5
-    prompt: prompts/personal/fundamental_analyst_v2.txt
+    prompt: prompts/default/fundamental_analyst.txt
     weight: 0.35
 
   - name: risk
     model: claude-sonnet-4-6
-    prompt: prompts/personal/risk_manager_veto_v1.txt
+    prompt: prompts/default/risk_manager.txt
     is_veto: true
 
 deliberation:
   enabled: true
   model: claude-sonnet-4-6
-  prompt: prompts/personal/deliberation_generic_v1.txt
+  prompt: prompts/default/deliberation.txt
 
 scoring:
   confidence_floor: 30

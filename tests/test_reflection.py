@@ -153,5 +153,5 @@ class TestRunReflection:
     async def test_prompt_file_loads_without_error(self, outputs, deliberation, profitable_trade):
         """Ensure the prompt file exists and is non-empty."""
         from src.agents.base import load_prompt
-        prompt = load_prompt("reflection_v1.txt")
+        prompt = load_prompt("personal/reflection_v1.txt")
         assert len(prompt) > 50

@@ -8,7 +8,7 @@ from src.models import FundamentalAnalystOutput, MarketContext
 # Spec assigns gemini-2.0-flash here; using claude-haiku-4-5 as a drop-in until
 # Gemini is wired up.
 MODEL = "claude-haiku-4-5"
-PROMPT_FILE = "fundamental_analyst_v2.txt"
+PROMPT_FILE = "default/fundamental_analyst.txt"
 
 
 def _build_user_message(ctx: MarketContext) -> str:

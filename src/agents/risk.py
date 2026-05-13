@@ -6,7 +6,7 @@ from src.agents.base import call_agent, load_prompt
 from src.models import MarketContext, RiskManagerOutput
 
 MODEL = "claude-sonnet-4-6"
-PROMPT_FILE = "risk_manager_v2.txt"
+PROMPT_FILE = "default/risk_manager.txt"
 
 
 def _build_user_message(ctx: MarketContext) -> str:

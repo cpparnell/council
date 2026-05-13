@@ -18,24 +18,24 @@ version: "1"
 #   is_veto:  false (default) for directional agents
 #
 # At most ONE agent may have is_veto: true. That agent outputs {veto, veto_reason, reasoning}
-# instead of {direction, confidence, reasoning}. Use prompts/veto_agent_template.txt as a
-# starting point for a veto agent prompt (see prompts/veto_agent_template.txt).
+# instead of {direction, confidence, reasoning}. Use prompts/templates/veto_agent_template.txt as a
+# starting point for a veto agent prompt (see prompts/templates/veto_agent_template.txt).
 #
-# Directional agents use prompts/agent_template.txt as a starting point.
+# Directional agents use prompts/templates/agent_template.txt as a starting point.
 agents:
   - name: momentum
     model: claude-haiku-4-5
-    prompt: prompts/agent_template.txt   # replace with your own prompt
+    prompt: prompts/templates/agent_template.txt   # replace with your own prompt
     weight: 0.50
 
   - name: macro
     model: claude-haiku-4-5
-    prompt: prompts/agent_template.txt   # replace with your own prompt
+    prompt: prompts/templates/agent_template.txt   # replace with your own prompt
     weight: 0.50
 
   - name: risk_guard
     model: claude-sonnet-4-6
-    prompt: prompts/veto_agent_template.txt
+    prompt: prompts/templates/veto_agent_template.txt
     is_veto: true
 
 # deliberation — optional narrative synthesis agent.
@@ -45,7 +45,7 @@ agents:
 deliberation:
   enabled: true
   model: claude-sonnet-4-6
-  prompt: prompts/deliberation_generic.txt
+  prompt: prompts/default/deliberation.txt
 
 # scoring — controls how directional agent outputs become a final signal.
 scoring:

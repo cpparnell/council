@@ -645,41 +645,46 @@ class TestScoreToPositionSize:
 
 # ======================================================= prompt loading
 
-_V1_PROMPTS = [
-    "technical_analyst_v1.txt",
-    "sentiment_analyst_v1.txt",
-    "fundamental_analyst_v1.txt",
-    "risk_manager_v1.txt",
-    "deliberation_v1.txt",
+_COUNCIL_PROMPTS = [
+    "default/technical_analyst.txt",
+    "default/sentiment_analyst.txt",
+    "default/fundamental_analyst.txt",
+    "default/risk_manager.txt",
+    "default/deliberation.txt",
 ]
-_V2_PROMPTS = [
-    "technical_analyst_v2.txt",
-    "sentiment_analyst_v2.txt",
-    "fundamental_analyst_v2.txt",
-    "risk_manager_v2.txt",
-    "deliberation_v2.txt",
+_PERSONAL_PROMPTS = [
+    "personal/reflection_v1.txt",
+    "personal/weekly_summary_v1.txt",
 ]
+_ALL_PROMPTS = _COUNCIL_PROMPTS + _PERSONAL_PROMPTS
 
 
 class TestPromptLoading:
-    def test_all_v1_prompts_exist(self):
+    def test_all_council_prompts_exist(self):
         from src.agents.base import PROMPTS_DIR
-        for fname in _V1_PROMPTS:
+        for fname in _COUNCIL_PROMPTS:
             assert (PROMPTS_DIR / fname).exists(), f"Missing prompt file: {fname}"
 
-    def test_all_v2_prompts_exist(self):
+    def test_all_personal_prompts_exist(self):
         from src.agents.base import PROMPTS_DIR
-        for fname in _V2_PROMPTS:
+        for fname in _PERSONAL_PROMPTS:
             assert (PROMPTS_DIR / fname).exists(), f"Missing prompt file: {fname}"
 
     def test_prompts_are_non_empty(self):
         from src.agents.base import load_prompt
-        for fname in _V1_PROMPTS + _V2_PROMPTS:
+        for fname in _ALL_PROMPTS:
             text = load_prompt(fname)
             assert len(text) > 100, f"Prompt {fname} is suspiciously short"
 
     def test_prompts_contain_json_instruction(self):
+        # risk_manager and deliberation use tool-forcing for structured output
+        # and don't need an explicit JSON instruction in the prompt text.
+        json_prompts = [
+            "default/technical_analyst.txt",
+            "default/sentiment_analyst.txt",
+            "default/fundamental_analyst.txt",
+        ]
         from src.agents.base import load_prompt
-        for fname in _V1_PROMPTS + _V2_PROMPTS:
+        for fname in json_prompts:
             text = load_prompt(fname)
             assert "JSON" in text, f"Prompt {fname} does not mention JSON output format"
